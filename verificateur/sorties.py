@@ -116,7 +116,7 @@ def _ecrire_csv(chemin, fiches):
         raise ErreurEcriture(f"Écriture impossible sur {chemin} : {erreur}") from erreur
 
 
-def ecrire_livrables(fiches, resume, dossier, parametres):
+def ecrire_livrables(fiches, resume, dossier, parametres, source_libelle=None):
     """Écrit les trois livrables et renvoie leurs chemins.
 
     Args:
@@ -124,6 +124,8 @@ def ecrire_livrables(fiches, resume, dossier, parametres):
         resume (dict): les compteurs produits par `analyse.compter()`.
         dossier (str): dossier de sortie.
         parametres (dict): paramètres d'exécution, tracés dans le JSON.
+        source_libelle (str | None): base officielle interrogée, tracée dans le
+            bloc ``meta`` pour rendre le rapport auditable.
 
     Returns:
         dict: les chemins écrits, par clé (`csv`, `alertes`, `json`).
@@ -149,7 +151,7 @@ def ecrire_livrables(fiches, resume, dossier, parametres):
     rapport = {
         "meta": {
             "genere_le": datetime.now().isoformat(timespec="seconds"),
-            "source": "API Recherche d'entreprises (recherche-entreprises.api.gouv.fr)",
+            "source": source_libelle or "non précisée",
             "parametres": parametres,
             "resume": resume,
         },
