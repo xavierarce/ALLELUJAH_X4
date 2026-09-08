@@ -6,9 +6,9 @@ module absorbe ce désordre et ne laisse remonter que des objets `Prospect`
 exploitables — ou un motif de rejet explicite.
 
 Règles retenues :
-  - on accepte plusieurs noms de colonnes (alias) pour le nom et l'identifiant ;
+  - plusieurs intitulés de colonnes sont acceptés (alias) ;
   - un identifiant est un SIREN (9 chiffres) ou un SIRET (14 chiffres), dont on
-    vérifie la **clé de Luhn** pour rejeter les fautes de frappe sans dépenser
+    vérifie la **clé de Luhn** : ça rejette les fautes de frappe sans dépenser
     un appel API ;
   - une ligne sans nom **et** sans identifiant est ignorée (avec un warning) ;
   - le fichier est lu en UTF-8 avec repli sur cp1252 (exports Excel français).
@@ -25,15 +25,14 @@ MOTIF_NON_CHIFFRE = re.compile(r"\D+")
 
 # Intitulés de colonnes tolérés, en minuscules. Le premier trouvé gagne.
 ALIAS_NOM = ("nom", "nom_entreprise", "entreprise", "raison_sociale", "societe")
-ALIAS_IDENTIFIANT = ("siren", "siret", "identifiant", "id")
+ALIAS_IDENTIFIANT = ("siren", "siret", "identifiant")
 ALIAS_CONTACT = ("contact", "email", "mail", "commercial")
 
 ENCODAGES = ("utf-8-sig", "cp1252")
 
-# Séparateurs testés par le sniffer : Excel en configuration française exporte
-# en point-virgule, les exports « standard » en virgule.
+# Excel en configuration française exporte en point-virgule, les exports
+# « standard » en virgule : on laisse le sniffer trancher.
 SEPARATEURS = ";,\t|"
-SEPARATEUR_DEFAUT = ","
 
 
 class FichierProspectsInvalide(Exception):
@@ -41,11 +40,11 @@ class FichierProspectsInvalide(Exception):
 
 
 def cle_luhn_valide(numero):
-    """Vérifie la clé de contrôle de Luhn d'un SIREN/SIRET.
+    """Vérifie la clé de contrôle de Luhn d'un SIREN.
 
     Le dernier chiffre d'un SIREN est une clé de contrôle : en doublant un
-    chiffre sur deux (en partant de la droite, position paire), la somme de
-    tous les chiffres obtenus doit être un multiple de 10.
+    chiffre sur deux en partant de la droite, la somme obtenue doit être un
+    multiple de 10.
 
     Args:
         numero (str): chaîne composée uniquement de chiffres.
@@ -77,10 +76,9 @@ class Prospect:
     Attributes:
         numero_ligne (int): numéro de la ligne dans le CSV (pour les messages).
         nom (str): nom de l'entreprise tel que saisi.
-        contact (str): colonne libre reprise à l'identique dans la sortie.
+        contact (str): colonne libre, reprise à l'identique dans la sortie.
         identifiant_saisi (str): identifiant tel que saisi (peut être vide).
         identifiant (str): identifiant réduit aux chiffres, ``""`` si absent.
-        type_identifiant (str | None): ``"siren"``, ``"siret"`` ou ``None``.
         motif_rejet (str | None): renseigné si l'identifiant est inexploitable.
     """
 
@@ -89,40 +87,37 @@ class Prospect:
         self.nom = (nom or "").strip()
         self.contact = (contact or "").strip()
         self.identifiant_saisi = (identifiant_saisi or "").strip()
+        # « 380 129 866 » ou « 380.129.866 » : on ne garde que les chiffres.
         self.identifiant = MOTIF_NON_CHIFFRE.sub("", self.identifiant_saisi)
-        self.type_identifiant = None
-        self.motif_rejet = None
-        self._analyser_identifiant()
+        self.motif_rejet = self._verifier_identifiant()
 
-    def _analyser_identifiant(self):
-        """Détermine le type de l'identifiant et sa validité."""
+    def _verifier_identifiant(self):
+        """Renvoie le motif de rejet de l'identifiant, ou ``None`` s'il est bon."""
         if not self.identifiant:
             # Pas d'identifiant : on cherchera par nom, ce n'est pas une erreur.
-            return
+            return None
 
-        if MOTIF_SIREN.match(self.identifiant):
-            self.type_identifiant = "siren"
-        elif MOTIF_SIRET.match(self.identifiant):
-            self.type_identifiant = "siret"
-        else:
-            self.motif_rejet = (
+        if not (MOTIF_SIREN.match(self.identifiant)
+                or MOTIF_SIRET.match(self.identifiant)):
+            return (
                 f"« {self.identifiant_saisi} » n'est ni un SIREN (9 chiffres) "
                 f"ni un SIRET (14 chiffres)"
             )
-            return
 
-        # La forme est bonne : on contrôle la clé (les 9 premiers chiffres d'un
-        # SIRET forment le SIREN, qui porte la clé de Luhn).
+        # La forme est bonne : on contrôle la clé. Les 9 premiers chiffres d'un
+        # SIRET forment le SIREN, qui porte la clé de Luhn.
         if not cle_luhn_valide(self.identifiant[:9]):
-            self.motif_rejet = (
+            return (
                 f"clé de contrôle invalide pour « {self.identifiant_saisi} » "
                 f"(probable faute de frappe)"
             )
 
+        return None
+
     @property
     def identifiant_exploitable(self):
         """``True`` si on peut interroger l'API directement par identifiant."""
-        return self.type_identifiant is not None and self.motif_rejet is None
+        return bool(self.identifiant) and self.motif_rejet is None
 
     @property
     def libelle(self):
@@ -143,41 +138,19 @@ def _colonne(entetes, alias):
     Returns:
         str | None: l'en-tête réel correspondant, ou ``None`` si absent.
     """
-    correspondance = {(e or "").strip().lower(): e for e in entetes}
+    trouves = {(entete or "").strip().lower(): entete for entete in entetes}
     for nom_alias in alias:
-        if nom_alias in correspondance:
-            return correspondance[nom_alias]
+        if nom_alias in trouves:
+            return trouves[nom_alias]
     return None
 
 
-def _detecter_separateur(echantillon):
-    """Devine le séparateur du CSV à partir de ses premières lignes.
-
-    Args:
-        echantillon (str): début du fichier.
-
-    Returns:
-        str: le séparateur détecté, ou `SEPARATEUR_DEFAUT` en cas de doute.
-    """
-    try:
-        separateur = csv.Sniffer().sniff(echantillon, delimiters=SEPARATEURS).delimiter
-    except csv.Error:
-        # Fichier à une seule colonne, ou trop irrégulier pour être deviné.
-        logging.debug("Séparateur indétectable, repli sur la virgule")
-        return SEPARATEUR_DEFAUT
-
-    logging.debug(f"Séparateur détecté : {separateur!r}")
-    return separateur
-
-
 def _lire_lignes(chemin):
-    """Lit le CSV et renvoie (en-têtes, lignes) en gérant encodage et séparateur.
+    """Lit le CSV et renvoie (en-têtes, lignes), encodage et séparateur gérés.
 
     Raises:
         FichierProspectsInvalide: fichier absent, illisible ou vide.
     """
-    derniere_erreur = None
-
     for encodage in ENCODAGES:
         try:
             with open(chemin, "r", encoding=encodage, newline="") as fichier:
@@ -188,30 +161,28 @@ def _lire_lignes(chemin):
                     raise FichierProspectsInvalide(f"{chemin} est vide.")
                 fichier.seek(0)
 
-                lecteur = csv.DictReader(
-                    fichier, delimiter=_detecter_separateur(echantillon)
-                )
-                if lecteur.fieldnames is None:
-                    raise FichierProspectsInvalide(f"{chemin} est vide.")
+                try:
+                    dialecte = csv.Sniffer().sniff(echantillon, delimiters=SEPARATEURS)
+                    separateur = dialecte.delimiter
+                except csv.Error:
+                    separateur = ","      # fichier à une seule colonne
+                logging.debug(f"Séparateur retenu : {separateur!r}")
+
+                lecteur = csv.DictReader(fichier, delimiter=separateur)
                 # On matérialise la liste DANS le `with` : le fichier est encore
-                # ouvert, et l'erreur d'encodage se déclenche ici.
-                return lecteur.fieldnames, list(lecteur)
+                # ouvert, et une erreur d'encodage se déclenche ici.
+                return lecteur.fieldnames or [], list(lecteur)
+
         except FileNotFoundError:
             # Inutile de tenter un autre encodage : le fichier n'existe pas.
-            raise FichierProspectsInvalide(
-                f"Fichier introuvable : {chemin}"
-            ) from None
+            raise FichierProspectsInvalide(f"Fichier introuvable : {chemin}") from None
         except PermissionError:
-            raise FichierProspectsInvalide(
-                f"Accès refusé au fichier : {chemin}"
-            ) from None
-        except UnicodeDecodeError as erreur:
+            raise FichierProspectsInvalide(f"Accès refusé : {chemin}") from None
+        except UnicodeDecodeError:
             logging.debug(f"Lecture en {encodage} impossible, on essaie le suivant")
-            derniere_erreur = erreur
 
     raise FichierProspectsInvalide(
-        f"Impossible de décoder {chemin} (encodages testés : "
-        f"{', '.join(ENCODAGES)}) — détail : {derniere_erreur}"
+        f"Impossible de décoder {chemin} (encodages testés : {', '.join(ENCODAGES)})."
     )
 
 
@@ -225,8 +196,8 @@ def charger_prospects(chemin):
         list[Prospect]: les lignes exploitables, dans l'ordre du fichier.
 
     Raises:
-        FichierProspectsInvalide: si le fichier est absent, vide, ou si aucune
-            colonne « nom » ni « siren » n'est reconnue.
+        FichierProspectsInvalide: fichier absent, vide, ou sans colonne « nom »
+            ni « siren » reconnue.
     """
     entetes, lignes = _lire_lignes(chemin)
     logging.debug(f"Colonnes détectées : {entetes}")
@@ -237,8 +208,8 @@ def charger_prospects(chemin):
 
     if colonne_nom is None and colonne_identifiant is None:
         raise FichierProspectsInvalide(
-            f"{chemin} : aucune colonne exploitable. Il faut au moins une "
-            f"colonne nommée parmi {ALIAS_NOM} ou {ALIAS_IDENTIFIANT}. "
+            f"{chemin} : aucune colonne exploitable. Il faut au moins une colonne "
+            f"nommée parmi {ALIAS_NOM} ou {ALIAS_IDENTIFIANT}. "
             f"Colonnes trouvées : {entetes}"
         )
 
@@ -249,11 +220,11 @@ def charger_prospects(chemin):
     for numero_ligne, ligne in enumerate(lignes, start=2):
         prospect = Prospect(
             numero_ligne=numero_ligne,
-            nom=ligne.get(colonne_nom, "") if colonne_nom else "",
+            nom=ligne.get(colonne_nom) if colonne_nom else "",
             identifiant_saisi=(
-                ligne.get(colonne_identifiant, "") if colonne_identifiant else ""
+                ligne.get(colonne_identifiant) if colonne_identifiant else ""
             ),
-            contact=ligne.get(colonne_contact, "") if colonne_contact else "",
+            contact=ligne.get(colonne_contact) if colonne_contact else "",
         )
 
         if not prospect.nom and not prospect.identifiant_saisi:

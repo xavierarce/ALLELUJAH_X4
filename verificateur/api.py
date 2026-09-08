@@ -3,79 +3,35 @@
 Source : https://recherche-entreprises.api.gouv.fr — base officielle des
 entreprises françaises, **accès libre, sans clé d'API**.
 
-Contraintes relevées dans la documentation officielle et respectées ici :
-  - **7 requêtes/seconde maximum par adresse IP** (30/s par ASN) → c'est ce qui
-    plafonne notre parallélisme à 5 threads par défaut, et non la machine ;
-  - au-delà, le serveur répond **HTTP 429** avec un en-tête `Retry-After`
-    indiquant le délai à respecter → on le lit et on attend réellement ;
-  - un **User-Agent explicite** est recommandé → on en envoie un.
+Deux contraintes de la documentation officielle sont prises en compte ici :
+  - **7 requêtes/seconde maximum par adresse IP** : c'est ce qui plafonne le
+    nombre de threads du programme, et non la machine ;
+  - au-delà, le serveur répond **HTTP 429** — un code passager, donc on
+    réessaie, contrairement à un 400 ou un 404 qui sont définitifs.
 
-Ce module ne fait *que* parler à l'API. Il ne sait rien du métier « prospect »
-et n'écrit aucun fichier : il renvoie du JSON déjà décodé, ou lève `ErreurAPI`.
+Ce module ne fait *que* parler à l'API : il renvoie du JSON déjà décodé, ou
+lève `ErreurAPI`. Il ne sait rien du métier « prospect » et n'écrit aucun
+fichier.
 """
 
 import logging
-import threading
 import time
 
 import requests
 
 URL_RECHERCHE = "https://recherche-entreprises.api.gouv.fr/search"
-USER_AGENT = "verif-prospects-esgi/1.0 (projet pedagogique ESGI - Python)"
+USER_AGENT = "verif-prospects-esgi/1.0 (projet pedagogique ESGI)"
 
-DELAI_TIMEOUT = 10          # secondes, par requête (connexion + lecture)
-TENTATIVES_MAX = 3          # nombre total d'essais pour une même requête
-ATTENTE_BASE = 1.0          # secondes, doublée à chaque nouvelle tentative
-ATTENTE_MAX = 15.0          # plafond de sécurité pour un `Retry-After` fantaisiste
+DELAI_TIMEOUT = 10      # secondes, par requête (connexion + lecture)
+TENTATIVES_MAX = 3      # nombre total d'essais pour une même requête
+ATTENTE = 2.0           # secondes entre deux tentatives
 
 # Codes pour lesquels réessayer a un sens : surcharge ou panne passagère.
-# Un 404 ou un 400 sont définitifs, inutile d'insister.
 CODES_A_REESSAYER = (429, 500, 502, 503, 504)
 
 
 class ErreurAPI(Exception):
     """Échec d'un appel API, avec un message destiné au rapport final."""
-
-
-# `requests.Session` réutilise la connexion TCP (gain notable sur N appels),
-# mais n'est pas garantie thread-safe. On donne donc une session *par thread*
-# via threading.local() : chaque thread du pool a la sienne.
-_local = threading.local()
-
-
-def _session():
-    """Renvoie la `Session` requests propre au thread courant."""
-    if not hasattr(_local, "session"):
-        session = requests.Session()
-        session.headers.update({"User-Agent": USER_AGENT})
-        _local.session = session
-    return _local.session
-
-
-def _duree_attente(reponse, tentative):
-    """Calcule le temps d'attente avant la prochaine tentative.
-
-    On privilégie l'en-tête `Retry-After` renvoyé par le serveur ; à défaut on
-    applique un back-off exponentiel (1s, 2s, 4s…).
-
-    Args:
-        reponse (requests.Response | None): la réponse reçue, si on en a une.
-        tentative (int): numéro de la tentative qui vient d'échouer (1, 2, …).
-
-    Returns:
-        float: nombre de secondes à attendre.
-    """
-    if reponse is not None:
-        entete = reponse.headers.get("Retry-After")
-        if entete:
-            try:
-                # `Retry-After` peut aussi contenir une date HTTP ; on ne gère
-                # que la forme « nombre de secondes », la seule utilisée ici.
-                return min(float(entete), ATTENTE_MAX)
-            except ValueError:
-                logging.debug(f"Retry-After illisible : {entete!r}")
-
-    return min(ATTENTE_BASE * (2 ** (tentative - 1)), ATTENTE_MAX)
 
 
 def rechercher(parametres):
@@ -88,72 +44,54 @@ def rechercher(parametres):
         dict: le corps JSON de la réponse.
 
     Raises:
-        ErreurAPI: après épuisement des tentatives, ou sur une erreur définitive
-            (paramètres refusés, JSON illisible, réseau injoignable).
+        ErreurAPI: après épuisement des tentatives, ou sur une erreur
+            définitive (paramètres refusés, JSON illisible).
     """
-    derniere_erreur = "erreur inconnue"
+    erreur = "erreur inconnue"
 
     for tentative in range(1, TENTATIVES_MAX + 1):
-        reponse = None
+        logging.debug(f"GET {URL_RECHERCHE} {parametres} (essai {tentative})")
         try:
-            logging.debug(f"GET {URL_RECHERCHE} {parametres} (essai {tentative})")
-            reponse = _session().get(
-                URL_RECHERCHE, params=parametres, timeout=DELAI_TIMEOUT
+            reponse = requests.get(
+                URL_RECHERCHE,
+                params=parametres,
+                timeout=DELAI_TIMEOUT,
+                headers={"User-Agent": USER_AGENT},
             )
-
-        # --- Pannes réseau : on distingue les cas pour un message utile ---
         except requests.Timeout:
-            derniere_erreur = f"délai dépassé (> {DELAI_TIMEOUT}s)"
-        except requests.ConnectionError:
-            derniere_erreur = "connexion impossible (réseau ou DNS)"
-        except requests.RequestException as erreur:
-            # Filet de sécurité : toute autre erreur de la bibliothèque.
-            derniere_erreur = f"erreur requests : {erreur}"
-
+            erreur = f"délai dépassé (> {DELAI_TIMEOUT} s)"
+        except requests.RequestException as exception:
+            # Couvre la panne de réseau, le DNS injoignable, le proxy…
+            erreur = f"réseau indisponible ({type(exception).__name__})"
         else:
-            # --- Séance 4, exo 5 : on vérifie le code AVANT d'exploiter ---
+            # Séance 4 : on vérifie le code AVANT d'exploiter la réponse.
             if reponse.status_code == 200:
                 try:
                     return reponse.json()
                 except ValueError:
-                    # Réponse 200 mais corps non-JSON (page d'erreur d'un proxy,
-                    # portail captif…). Inutile de réessayer.
+                    # 200 mais corps non-JSON : page d'erreur d'un proxy, portail
+                    # captif d'un wifi public… Inutile de réessayer.
                     raise ErreurAPI(
                         "réponse illisible : le serveur n'a pas renvoyé du JSON"
                     ) from None
 
-            if reponse.status_code in CODES_A_REESSAYER:
-                derniere_erreur = f"HTTP {reponse.status_code}"
-                if reponse.status_code == 429:
-                    derniere_erreur += " (quota de 7 requêtes/s dépassé)"
-            else:
-                # Erreur définitive : l'API explique souvent pourquoi dans un
-                # champ `erreur`, on le remonte tel quel.
-                detail = ""
-                try:
-                    detail = reponse.json().get("erreur", "")
-                except ValueError:
-                    detail = ""
-                raise ErreurAPI(
-                    f"HTTP {reponse.status_code}" + (f" — {detail}" if detail else "")
-                )
+            erreur = f"HTTP {reponse.status_code}"
+            if reponse.status_code == 429:
+                erreur += " (quota de 7 requêtes/s dépassé)"
+            elif reponse.status_code not in CODES_A_REESSAYER:
+                raise ErreurAPI(erreur)
 
-        # On arrive ici uniquement si un nouvel essai est envisageable.
         if tentative < TENTATIVES_MAX:
-            attente = _duree_attente(reponse, tentative)
-            logging.warning(
-                f"{derniere_erreur} — nouvelle tentative dans {attente:.1f}s "
-                f"({tentative}/{TENTATIVES_MAX - 1})"
-            )
-            time.sleep(attente)
+            logging.warning(f"{erreur} — nouvelle tentative dans {ATTENTE:.0f} s")
+            time.sleep(ATTENTE)
 
-    raise ErreurAPI(f"{derniere_erreur} après {TENTATIVES_MAX} tentatives")
+    raise ErreurAPI(f"{erreur} après {TENTATIVES_MAX} tentatives")
 
 
 def chercher_par_identifiant(identifiant):
-    """Recherche directe par SIREN (9 chiffres) ou SIRET (14 chiffres).
+    """Recherche exacte par SIREN (9 chiffres) ou SIRET (14 chiffres).
 
-    L'API bascule automatiquement en « recherche directe » quand `q` ne contient
+    L'API bascule d'elle-même en « recherche directe » quand `q` ne contient
     que 9 ou 14 chiffres : le résultat est alors exact, pas approché.
 
     Args:
@@ -174,12 +112,11 @@ def chercher_par_nom(nom, nombre_candidats=5):
 
     Args:
         nom (str): raison sociale ou nom commercial.
-        nombre_candidats (int): nombre de candidats à rapatrier pour pouvoir
-            détecter une homonymie.
+        nombre_candidats (int): nombre de candidats à rapatrier, pour pouvoir
+            choisir le meilleur au lieu de croire le premier.
 
     Returns:
-        tuple[list[dict], int]: les candidats et le nombre total de résultats
-            annoncé par l'API (utile pour repérer une recherche trop vague).
+        list[dict]: les candidats renvoyés par l'API.
 
     Raises:
         ErreurAPI: en cas d'échec de l'appel.
@@ -192,4 +129,4 @@ def chercher_par_nom(nom, nombre_candidats=5):
             "include": "siege",
         }
     )
-    return donnees.get("results") or [], donnees.get("total_results", 0)
+    return donnees.get("results") or []
