@@ -63,6 +63,9 @@ FORMES_JURIDIQUES = {
 }
 
 MOTIF_SEPARATEURS = re.compile(r"[^A-Z0-9]+")
+# L'API renvoie souvent « RAISON SOCIALE (SIGLE) » : on compare aussi le nom
+# saisi à la version sans la parenthèse.
+MOTIF_PARENTHESES = re.compile(r"\([^)]*\)")
 
 
 def normaliser(texte):
@@ -107,11 +110,17 @@ def score_ressemblance(nom_saisi, nom_officiel):
         int: 100 = identique après normalisation, 0 = aucun rapport.
     """
     reference = normaliser(nom_saisi)
-    candidat = normaliser(nom_officiel)
-    if not reference or not candidat:
+    if not reference:
         return 0
 
-    return round(difflib.SequenceMatcher(None, reference, candidat).ratio() * 100)
+    meilleur = 0
+    for variante in (nom_officiel, MOTIF_PARENTHESES.sub("", nom_officiel or "")):
+        candidat = normaliser(variante)
+        if candidat:
+            ratio = difflib.SequenceMatcher(None, reference, candidat).ratio()
+            meilleur = max(meilleur, round(ratio * 100))
+
+    return meilleur
 
 
 def _jours_depuis(chaine_date, aujourdhui):

@@ -115,6 +115,15 @@ class TestCorrespondanceDeNom(unittest.TestCase):
     def test_score_identique_est_100(self):
         self.assertEqual(analyse.score_ressemblance("ORANGE", "ORANGE"), 100)
 
+    def test_score_ignore_le_sigle_entre_parentheses(self):
+        """L'API renvoie « RAISON SOCIALE (SIGLE) » : ce n'est pas un écart."""
+        self.assertEqual(
+            analyse.score_ressemblance(
+                "FREDERIC CONSEIL", "FREDERIC CONSEIL (TAXI SERVICES 22)"
+            ),
+            100,
+        )
+
     def test_score_faible_pour_noms_differents(self):
         self.assertLess(
             analyse.score_ressemblance("Dupont Consulting", "CARREFOUR"),

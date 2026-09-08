@@ -1,11 +1,11 @@
 {
   "meta": {
-    "genere_le": "2026-09-08T16:29:23",
+    "genere_le": "2026-09-08T16:30:16",
     "source": "API Recherche d'entreprises (recherche-entreprises.api.gouv.fr)",
     "parametres": {
       "fichier_entree": "donnees/prospects.csv",
-      "workers": 5,
-      "duree_secondes": 0.52
+      "workers": 1,
+      "duree_secondes": 2.05
     },
     "resume": {
       "total": 12,
@@ -73,7 +73,7 @@
       "etat_activite": "CESSEE",
       "alerte": "CESSATION_RECENTE",
       "a_signaler": true,
-      "message": "Attention : le nom saisi « FREDERIC CONSEIL » ne correspond pas à « FREDERIC CONSEIL (TAXI SERVICES 22) » pour ce SIREN. Cessation d'activité le 2025-09-19 (il y a 354 jours) — ne pas démarcher.",
+      "message": "Cessation d'activité le 2025-09-19 (il y a 354 jours) — ne pas démarcher.",
       "nom_officiel": "FREDERIC CONSEIL (TAXI SERVICES 22)",
       "siren": "851643189",
       "siret_siege": "85164318900026",
@@ -137,7 +137,7 @@
       "adresse_siege": "29 BOULEVARD HAUSSMANN 75009 PARIS",
       "date_creation": "1900-01-01",
       "date_cessation": "",
-      "score_correspondance": 84,
+      "score_correspondance": 100,
       "url_annuaire": "https://annuaire-entreprises.data.gouv.fr/entreprise/552120222"
     },
     {

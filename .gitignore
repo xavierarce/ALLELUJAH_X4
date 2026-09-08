@@ -2,3 +2,5 @@ resultats/
 __pycache__/
 .venv/
 *.pyc
+
+# tests/__pycache__
