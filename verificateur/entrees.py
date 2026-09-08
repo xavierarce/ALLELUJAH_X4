@@ -1,20 +1,27 @@
-"""Lecture et validation du fichier CSV de prospects (Séances 5 et 6).
+"""Lecture et validation du fichier JSON de prospects (Séances 5 et 6).
 
-Le cabinet nous fournit un CSV « tel quel » : les intitulés de colonnes varient
-d'un export à l'autre, des lignes sont vides, des SIREN sont mal saisis. Ce
-module absorbe ce désordre et ne laisse remonter que des objets `Prospect`
-exploitables — ou un motif de rejet explicite.
+Le cabinet nous fournit sa liste en JSON : un tableau d'objets, un objet par
+prospect. Ce module absorbe les saisies approximatives et ne laisse remonter
+que des objets `Prospect` exploitables — ou un motif de rejet explicite.
+
+Format attendu :
+
+    [
+      {"nom": "ORANGE", "siren": "380129866", "contact": "marie@cabinet.fr"},
+      {"nom": "Société Générale"}
+    ]
 
 Règles retenues :
-  - plusieurs intitulés de colonnes sont acceptés (alias) ;
+  - le fichier peut être le tableau directement, ou un objet
+    ``{"prospects": [...]}`` — les deux formes se rencontrent ;
+  - la clé de l'identifiant peut être ``siren`` ou ``siret`` ;
   - un identifiant est un SIREN (9 chiffres) ou un SIRET (14 chiffres), dont on
     vérifie la **clé de Luhn** : ça rejette les fautes de frappe sans dépenser
     un appel API ;
-  - une ligne sans nom **et** sans identifiant est ignorée (avec un warning) ;
-  - le fichier est lu en UTF-8 avec repli sur cp1252 (exports Excel français).
+  - un prospect sans nom **et** sans identifiant est ignoré (avec un warning).
 """
 
-import csv
+import json
 import logging
 import re
 
@@ -23,20 +30,12 @@ MOTIF_SIREN = re.compile(r"^\d{9}$")
 MOTIF_SIRET = re.compile(r"^\d{14}$")
 MOTIF_NON_CHIFFRE = re.compile(r"\D+")
 
-# Intitulés de colonnes tolérés, en minuscules. Le premier trouvé gagne.
-ALIAS_NOM = ("nom", "nom_entreprise", "entreprise", "raison_sociale", "societe")
-ALIAS_IDENTIFIANT = ("siren", "siret", "identifiant")
-ALIAS_CONTACT = ("contact", "email", "mail", "commercial")
-
-ENCODAGES = ("utf-8-sig", "cp1252")
-
-# Excel en configuration française exporte en point-virgule, les exports
-# « standard » en virgule : on laisse le sniffer trancher.
-SEPARATEURS = ";,\t|"
+# Clés acceptées pour l'identifiant. La première présente gagne.
+CLES_IDENTIFIANT = ("siren", "siret")
 
 
 class FichierProspectsInvalide(Exception):
-    """Le fichier d'entrée est inutilisable (absent, vide, sans colonne connue)."""
+    """Le fichier d'entrée est inutilisable (absent, illisible, mal formé)."""
 
 
 def cle_luhn_valide(numero):
@@ -71,22 +70,22 @@ def cle_luhn_valide(numero):
 
 
 class Prospect:
-    """Une ligne du fichier d'entrée, nettoyée et validée.
+    """Un prospect du fichier d'entrée, nettoyé et validé.
 
     Attributes:
-        numero_ligne (int): numéro de la ligne dans le CSV (pour les messages).
+        rang (int): position dans le tableau JSON (pour retrouver la ligne).
         nom (str): nom de l'entreprise tel que saisi.
-        contact (str): colonne libre, reprise à l'identique dans la sortie.
+        contact (str): champ libre, repris à l'identique dans la sortie.
         identifiant_saisi (str): identifiant tel que saisi (peut être vide).
         identifiant (str): identifiant réduit aux chiffres, ``""`` si absent.
         motif_rejet (str | None): renseigné si l'identifiant est inexploitable.
     """
 
-    def __init__(self, numero_ligne, nom, identifiant_saisi="", contact=""):
-        self.numero_ligne = numero_ligne
-        self.nom = (nom or "").strip()
-        self.contact = (contact or "").strip()
-        self.identifiant_saisi = (identifiant_saisi or "").strip()
+    def __init__(self, rang, nom, identifiant_saisi="", contact=""):
+        self.rang = rang
+        self.nom = str(nom or "").strip()
+        self.contact = str(contact or "").strip()
+        self.identifiant_saisi = str(identifiant_saisi or "").strip()
         # « 380 129 866 » ou « 380.129.866 » : on ne garde que les chiffres.
         self.identifiant = MOTIF_NON_CHIFFRE.sub("", self.identifiant_saisi)
         self.motif_rejet = self._verifier_identifiant()
@@ -122,114 +121,95 @@ class Prospect:
     @property
     def libelle(self):
         """Libellé court pour les logs et les messages d'erreur."""
-        return self.nom or self.identifiant_saisi or f"ligne {self.numero_ligne}"
+        return self.nom or self.identifiant_saisi or f"prospect n°{self.rang}"
 
     def __repr__(self):
-        return f"Prospect(ligne={self.numero_ligne!r}, nom={self.nom!r})"
+        return f"Prospect(rang={self.rang!r}, nom={self.nom!r})"
 
 
-def _colonne(entetes, alias):
-    """Retrouve le nom réel d'une colonne parmi une liste d'alias.
+def _lire_json(chemin):
+    """Lit le fichier et renvoie la liste brute des prospects.
 
     Args:
-        entetes (list[str]): les en-têtes du CSV, tels que lus.
-        alias (tuple[str]): les intitulés acceptés, en minuscules.
+        chemin (str): chemin du fichier JSON.
 
     Returns:
-        str | None: l'en-tête réel correspondant, ou ``None`` si absent.
-    """
-    trouves = {(entete or "").strip().lower(): entete for entete in entetes}
-    for nom_alias in alias:
-        if nom_alias in trouves:
-            return trouves[nom_alias]
-    return None
-
-
-def _lire_lignes(chemin):
-    """Lit le CSV et renvoie (en-têtes, lignes), encodage et séparateur gérés.
+        list: les entrées, telles qu'écrites dans le fichier.
 
     Raises:
-        FichierProspectsInvalide: fichier absent, illisible ou vide.
+        FichierProspectsInvalide: fichier absent, illisible, ou JSON mal formé.
     """
-    for encodage in ENCODAGES:
-        try:
-            with open(chemin, "r", encoding=encodage, newline="") as fichier:
-                # On lit un échantillon pour deviner le séparateur, puis on
-                # revient au début du fichier pour la lecture réelle.
-                echantillon = fichier.read(4096)
-                if not echantillon.strip():
-                    raise FichierProspectsInvalide(f"{chemin} est vide.")
-                fichier.seek(0)
+    try:
+        with open(chemin, "r", encoding="utf-8") as fichier:
+            donnees = json.load(fichier)
+    except FileNotFoundError:
+        raise FichierProspectsInvalide(f"Fichier introuvable : {chemin}") from None
+    except PermissionError:
+        raise FichierProspectsInvalide(f"Accès refusé : {chemin}") from None
+    except UnicodeDecodeError:
+        raise FichierProspectsInvalide(
+            f"{chemin} n'est pas encodé en UTF-8 — le réenregistrer en UTF-8."
+        ) from None
+    except json.JSONDecodeError as erreur:
+        # On remonte la position : c'est ce qui rend une virgule oubliée
+        # trouvable en dix secondes au lieu d'un quart d'heure.
+        raise FichierProspectsInvalide(
+            f"{chemin} n'est pas du JSON valide — {erreur.msg} "
+            f"(ligne {erreur.lineno}, colonne {erreur.colno})."
+        ) from None
 
-                try:
-                    dialecte = csv.Sniffer().sniff(echantillon, delimiters=SEPARATEURS)
-                    separateur = dialecte.delimiter
-                except csv.Error:
-                    separateur = ","      # fichier à une seule colonne
-                logging.debug(f"Séparateur retenu : {separateur!r}")
+    # Tolérance : le tableau nu, ou emballé dans {"prospects": [...]}.
+    if isinstance(donnees, dict):
+        donnees = donnees.get("prospects")
 
-                lecteur = csv.DictReader(fichier, delimiter=separateur)
-                # On matérialise la liste DANS le `with` : le fichier est encore
-                # ouvert, et une erreur d'encodage se déclenche ici.
-                return lecteur.fieldnames or [], list(lecteur)
+    if not isinstance(donnees, list):
+        raise FichierProspectsInvalide(
+            f"{chemin} doit contenir un tableau de prospects "
+            f"(ou un objet avec une clé « prospects »)."
+        )
 
-        except FileNotFoundError:
-            # Inutile de tenter un autre encodage : le fichier n'existe pas.
-            raise FichierProspectsInvalide(f"Fichier introuvable : {chemin}") from None
-        except PermissionError:
-            raise FichierProspectsInvalide(f"Accès refusé : {chemin}") from None
-        except UnicodeDecodeError:
-            logging.debug(f"Lecture en {encodage} impossible, on essaie le suivant")
-
-    raise FichierProspectsInvalide(
-        f"Impossible de décoder {chemin} (encodages testés : {', '.join(ENCODAGES)})."
-    )
+    return donnees
 
 
 def charger_prospects(chemin):
-    """Charge le CSV de prospects et renvoie la liste des `Prospect`.
+    """Charge le fichier JSON de prospects et renvoie la liste des `Prospect`.
 
     Args:
-        chemin (str): chemin du fichier CSV.
+        chemin (str): chemin du fichier JSON.
 
     Returns:
-        list[Prospect]: les lignes exploitables, dans l'ordre du fichier.
+        list[Prospect]: les prospects exploitables, dans l'ordre du fichier.
 
     Raises:
-        FichierProspectsInvalide: fichier absent, vide, ou sans colonne « nom »
-            ni « siren » reconnue.
+        FichierProspectsInvalide: fichier absent, mal formé, ou sans aucun
+            prospect exploitable.
     """
-    entetes, lignes = _lire_lignes(chemin)
-    logging.debug(f"Colonnes détectées : {entetes}")
-
-    colonne_nom = _colonne(entetes, ALIAS_NOM)
-    colonne_identifiant = _colonne(entetes, ALIAS_IDENTIFIANT)
-    colonne_contact = _colonne(entetes, ALIAS_CONTACT)
-
-    if colonne_nom is None and colonne_identifiant is None:
-        raise FichierProspectsInvalide(
-            f"{chemin} : aucune colonne exploitable. Il faut au moins une colonne "
-            f"nommée parmi {ALIAS_NOM} ou {ALIAS_IDENTIFIANT}. "
-            f"Colonnes trouvées : {entetes}"
-        )
+    entrees = _lire_json(chemin)
 
     prospects = []
-    ignorees = 0
+    ignores = 0
 
-    # start=2 : la ligne 1 du fichier est l'en-tête.
-    for numero_ligne, ligne in enumerate(lignes, start=2):
+    for rang, entree in enumerate(entrees, start=1):
+        if not isinstance(entree, dict):
+            logging.warning(f"Prospect n°{rang} ignoré : ce n'est pas un objet JSON")
+            ignores += 1
+            continue
+
+        # Première clé d'identifiant renseignée : « siren », sinon « siret ».
+        identifiant = next(
+            (entree[cle] for cle in CLES_IDENTIFIANT if entree.get(cle)), ""
+        )
+
         prospect = Prospect(
-            numero_ligne=numero_ligne,
-            nom=ligne.get(colonne_nom) if colonne_nom else "",
-            identifiant_saisi=(
-                ligne.get(colonne_identifiant) if colonne_identifiant else ""
-            ),
-            contact=ligne.get(colonne_contact) if colonne_contact else "",
+            rang=rang,
+            nom=entree.get("nom"),
+            identifiant_saisi=identifiant,
+            contact=entree.get("contact"),
         )
 
         if not prospect.nom and not prospect.identifiant_saisi:
-            logging.warning(f"Ligne {numero_ligne} ignorée : ni nom ni identifiant")
-            ignorees += 1
+            logging.warning(f"Prospect n°{rang} ignoré : ni nom ni identifiant")
+            ignores += 1
             continue
 
         prospects.append(prospect)
@@ -237,11 +217,11 @@ def charger_prospects(chemin):
     if not prospects:
         raise FichierProspectsInvalide(
             f"{chemin} ne contient aucun prospect exploitable "
-            f"({ignorees} ligne(s) vide(s))."
+            f"({ignores} entrée(s) inutilisable(s))."
         )
 
     logging.info(
         f"{len(prospects)} prospect(s) chargé(s) depuis {chemin}"
-        + (f" — {ignorees} ligne(s) ignorée(s)" if ignorees else "")
+        + (f" — {ignores} entrée(s) ignorée(s)" if ignores else "")
     )
     return prospects

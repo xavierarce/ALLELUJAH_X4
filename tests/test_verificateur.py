@@ -10,6 +10,7 @@ Lancement, depuis la racine du projet :
     python3 -m unittest discover -s tests -v
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -63,9 +64,9 @@ ETAT_NULL = {          # cas réel : le SIREN existe, mais sans état administra
 }
 
 
-def prospect(nom="", identifiant="", ligne=2):
+def prospect(nom="", identifiant="", rang=1):
     """Raccourci de construction d'un prospect pour les tests."""
-    return entrees.Prospect(numero_ligne=ligne, nom=nom, identifiant_saisi=identifiant)
+    return entrees.Prospect(rang=rang, nom=nom, identifiant_saisi=identifiant)
 
 
 class TestValidationIdentifiant(unittest.TestCase):
@@ -220,58 +221,76 @@ class TestFichesDegradees(unittest.TestCase):
         self.assertEqual(fiche["etat_activite"], analyse.ETAT_INCONNU)
         self.assertTrue(analyse.marquer_a_signaler(fiche)["a_signaler"])
 
-    def test_toutes_les_fiches_ont_les_memes_colonnes(self):
-        """Le CSV livré doit être régulier, même quand tout se passe mal."""
+    def test_toutes_les_fiches_ont_les_memes_champs(self):
+        """Le rapport livré doit être régulier, même quand tout se passe mal."""
         fiches = [
             analyse.analyser_par_identifiant(prospect("X", "380129866"), [ORANGE_ACTIVE]),
             analyse.analyser_par_nom(prospect("Y"), []),
             analyse.fiche_identifiant_invalide(prospect("Z", "123456789")),
             analyse.fiche_erreur_api(prospect("W"), "réseau"),
         ]
+        champs_attendus = set(analyse.fiche_vide(prospect()))
         for fiche in fiches:
-            self.assertEqual(set(fiche), set(sorties.COLONNES))
+            self.assertEqual(set(fiche), champs_attendus)
 
 
-class TestLectureCsv(unittest.TestCase):
+class TestLectureJson(unittest.TestCase):
     def _fichier(self, contenu, encodage="utf-8"):
-        """Écrit un CSV temporaire et renvoie son chemin."""
-        descripteur, chemin = tempfile.mkstemp(suffix=".csv")
+        """Écrit un fichier temporaire et renvoie son chemin."""
+        descripteur, chemin = tempfile.mkstemp(suffix=".json")
         os.close(descripteur)
-        with open(chemin, "w", encoding=encodage, newline="") as fichier:
+        with open(chemin, "w", encoding=encodage) as fichier:
             fichier.write(contenu)
         self.addCleanup(os.unlink, chemin)
         return chemin
 
-    def test_separateur_point_virgule(self):
-        chemin = self._fichier("nom;siren\nORANGE;380129866\n")
+    def test_tableau_simple(self):
+        chemin = self._fichier('[{"nom": "ORANGE", "siren": "380129866"}]')
+        prospects = entrees.charger_prospects(chemin)
+        self.assertEqual(len(prospects), 1)
+        self.assertEqual(prospects[0].nom, "ORANGE")
+        self.assertEqual(prospects[0].rang, 1)
+
+    def test_cle_siret_acceptee(self):
+        chemin = self._fichier('[{"nom": "ORANGE", "siret": "38012986646013"}]')
+        self.assertTrue(entrees.charger_prospects(chemin)[0].identifiant_exploitable)
+
+    def test_objet_enveloppe(self):
+        """Le tableau peut être emballé dans {"prospects": [...]}."""
+        chemin = self._fichier('{"prospects": [{"nom": "ORANGE"}]}')
         self.assertEqual(len(entrees.charger_prospects(chemin)), 1)
 
-    def test_separateur_virgule(self):
-        chemin = self._fichier("nom,siren\nORANGE,380129866\nCARREFOUR,503932568\n")
-        self.assertEqual(len(entrees.charger_prospects(chemin)), 2)
-
-    def test_alias_de_colonnes(self):
-        chemin = self._fichier("raison_sociale;siret\nORANGE;38012986646013\n")
-        self.assertEqual(entrees.charger_prospects(chemin)[0].nom, "ORANGE")
-
-    def test_lignes_vides_ignorees(self):
-        chemin = self._fichier("nom;siren\nORANGE;380129866\n;\n")
-        self.assertEqual(len(entrees.charger_prospects(chemin)), 1)
-
-    def test_encodage_excel_francais(self):
-        chemin = self._fichier("nom;siren\nSociété Générale;\n", encodage="cp1252")
+    def test_accents_conserves(self):
+        chemin = self._fichier('[{"nom": "Société Générale"}]')
         self.assertEqual(entrees.charger_prospects(chemin)[0].nom, "Société Générale")
+
+    def test_identifiant_numerique_tolere(self):
+        """Un SIREN écrit sans guillemets ne doit pas faire planter la lecture."""
+        chemin = self._fichier('[{"nom": "ORANGE", "siren": 380129866}]')
+        self.assertEqual(entrees.charger_prospects(chemin)[0].identifiant, "380129866")
+
+    def test_entrees_vides_ignorees(self):
+        chemin = self._fichier('[{"nom": "ORANGE"}, {}, "pas un objet"]')
+        self.assertEqual(len(entrees.charger_prospects(chemin)), 1)
 
     def test_fichier_absent(self):
         with self.assertRaises(entrees.FichierProspectsInvalide):
-            entrees.charger_prospects("/introuvable/prospects.csv")
+            entrees.charger_prospects("/introuvable/prospects.json")
 
-    def test_fichier_vide(self):
+    def test_json_mal_forme_indique_la_position(self):
+        """Une virgule en trop doit produire un message actionnable."""
+        chemin = self._fichier('[{"nom": "ORANGE"},]')
+        with self.assertRaises(entrees.FichierProspectsInvalide) as contexte:
+            entrees.charger_prospects(chemin)
+        self.assertIn("ligne", str(contexte.exception))
+
+    def test_json_valide_mais_pas_un_tableau(self):
+        chemin = self._fichier('{"nom": "ORANGE"}')
         with self.assertRaises(entrees.FichierProspectsInvalide):
-            entrees.charger_prospects(self._fichier("\n"))
+            entrees.charger_prospects(chemin)
 
-    def test_colonnes_inconnues(self):
-        chemin = self._fichier("ville;code_postal\nParis;75008\n")
+    def test_tableau_sans_prospect_exploitable(self):
+        chemin = self._fichier("[{}, {}]")
         with self.assertRaises(entrees.FichierProspectsInvalide):
             entrees.charger_prospects(chemin)
 
@@ -341,17 +360,17 @@ class TestAppelApi(unittest.TestCase):
         self.assertIn("délai dépassé", str(contexte.exception))
 
 
-class TestLivrables(unittest.TestCase):
-    def test_trois_fichiers_ecrits_et_alertes_filtrees(self):
+class TestRapportJson(unittest.TestCase):
+    def test_rapport_ecrit_et_relisible(self):
         fiches = [
             analyse.marquer_a_signaler(
                 analyse.analyser_par_identifiant(
-                    prospect("ORANGE", "380129866"), [ORANGE_ACTIVE], AUJOURDHUI
+                    prospect("ORANGE", "380129866", rang=1), [ORANGE_ACTIVE], AUJOURDHUI
                 )
             ),
             analyse.marquer_a_signaler(
                 analyse.analyser_par_identifiant(
-                    prospect("BOULANGERIE DE L'EUROPE", "923804504"),
+                    prospect("BOULANGERIE DE L'EUROPE", "923804504", rang=2),
                     [CESSEE_RECENTE],
                     AUJOURDHUI,
                 )
@@ -361,19 +380,24 @@ class TestLivrables(unittest.TestCase):
         self.assertEqual(resume["a_signaler"], 1)
 
         with tempfile.TemporaryDirectory() as dossier:
-            chemins = sorties.ecrire_livrables(
-                fiches, resume, dossier, parametres={"fichier_entree": "test.csv"}
+            chemin = sorties.ecrire_rapport(
+                fiches, resume, dossier, parametres={"fichier_entree": "test.json"}
             )
-            for chemin in chemins.values():
-                self.assertTrue(os.path.exists(chemin))
+            with open(chemin, encoding="utf-8") as fichier:
+                rapport = json.load(fichier)
 
-            with open(chemins["alertes"], encoding="utf-8-sig") as fichier:
-                lignes = fichier.read().strip().splitlines()
-            # En-tête + la seule entreprise cessée.
-            self.assertEqual(len(lignes), 2)
-            self.assertIn("BOULANGERIE", lignes[1])
-            # Booléens rendus lisibles pour un tableur.
-            self.assertIn(";oui;", lignes[1])
+        # Le bloc meta rend l'exécution auditable.
+        self.assertEqual(rapport["meta"]["resume"]["a_signaler"], 1)
+        self.assertIn("genere_le", rapport["meta"])
+        self.assertEqual(rapport["meta"]["parametres"]["fichier_entree"], "test.json")
+
+        # Les booléens restent des booléens JSON : exploitable sans conversion.
+        a_signaler = [p for p in rapport["prospects"] if p["a_signaler"] is True]
+        self.assertEqual(len(a_signaler), 1)
+        self.assertEqual(a_signaler[0]["alerte"], analyse.ALERTE_CESSATION_RECENTE)
+
+        # Les accents ne doivent pas être échappés en \uXXXX.
+        self.assertIn("EUROPE", a_signaler[0]["nom_officiel"])
 
 
 if __name__ == "__main__":

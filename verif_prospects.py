@@ -8,15 +8,15 @@ prospect d'une liste si l'entreprise est **toujours en activité**, récupérer 
 **informations à jour**, et **signaler** celles qui ont cessé leur activité.
 
 Usage :
-    python3 verif_prospects.py donnees/prospects.csv
-    python3 verif_prospects.py donnees/prospects.csv --sortie resultats/
-    python3 verif_prospects.py donnees/prospects.csv --sequentiel   # pour comparer
-    python3 verif_prospects.py donnees/prospects.csv --verbose
+    python3 verif_prospects.py donnees/prospects.json
+    python3 verif_prospects.py donnees/prospects.json --sortie resultats/
+    python3 verif_prospects.py donnees/prospects.json --sequentiel   # pour comparer
+    python3 verif_prospects.py donnees/prospects.json --verbose
 
 Enchaînement des briques vues en cours :
     Séance 4  argparse + requests (appel API, vérification du status_code)
     Séance 5  regex + JSON (validation des SIREN, exploitation de la réponse)
-    Séance 6  fichiers + try/except (lecture du CSV, écriture des livrables)
+    Séance 6  fichiers + try/except (lecture de l'entrée, écriture du rapport)
     Séance 7  ThreadPoolExecutor (parallélisation des appels — I/O-bound)
 """
 
@@ -101,8 +101,8 @@ def verifier_lot(prospects, workers, aujourdhui):
 
     logging.info(f"Vérification de {len(prospects)} prospect(s) sur {workers} threads")
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        # `.map()` conserve l'ordre de la liste d'entrée : le CSV de sortie est
-        # aligné sur le CSV d'entrée, ce qui facilite la relecture par le client.
+        # `.map()` conserve l'ordre de la liste d'entrée : le rapport est aligné
+        # sur le fichier d'entrée, ce qui facilite la relecture par le client.
         return list(executor.map(lambda p: verifier_prospect(p, aujourdhui), prospects))
 
 
@@ -111,18 +111,18 @@ def analyser_arguments():
     parseur = argparse.ArgumentParser(
         description=(
             "Vérifie auprès de la base officielle des entreprises françaises "
-            "si les prospects d'un fichier CSV sont toujours en activité."
+            "si les prospects d'un fichier JSON sont toujours en activité."
         ),
-        epilog="Exemple : python3 verif_prospects.py donnees/prospects.csv",
+        epilog="Exemple : python3 verif_prospects.py donnees/prospects.json",
     )
     parseur.add_argument(
         "fichier",
-        help="Fichier CSV des prospects (colonnes reconnues : nom, siren/siret, contact)",
+        help="Fichier JSON des prospects (clés reconnues : nom, siren/siret, contact)",
     )
     parseur.add_argument(
         "--sortie",
         default=DOSSIER_SORTIE_DEFAUT,
-        help=f"Dossier des livrables (défaut : {DOSSIER_SORTIE_DEFAUT}/)",
+        help=f"Dossier du rapport (défaut : {DOSSIER_SORTIE_DEFAUT}/)",
     )
     parseur.add_argument(
         "--sequentiel",
@@ -149,7 +149,7 @@ def main():
         stream=sys.stderr,
     )
 
-    # --- 1. Entrée : lecture et validation du CSV ----------------------------
+    # --- 1. Entrée : lecture et validation du JSON ---------------------------
     try:
         prospects = entrees.charger_prospects(args.fichier)
     except entrees.FichierProspectsInvalide as erreur:
@@ -169,10 +169,10 @@ def main():
         return 130
     duree = time.time() - debut
 
-    # --- 3. Sortie : livrables + rapport console -----------------------------
+    # --- 3. Sortie : rapport JSON + synthèse console -------------------------
     resume = analyse.compter(fiches)
     try:
-        chemins = sorties.ecrire_livrables(
+        chemin = sorties.ecrire_rapport(
             fiches,
             resume,
             args.sortie,
@@ -186,7 +186,7 @@ def main():
         logging.error(erreur)
         return 1
 
-    sorties.afficher_rapport(fiches, resume, duree, chemins)
+    sorties.afficher_rapport(fiches, resume, duree, chemin)
 
     # Code 2 s'il reste des signalements : un cron peut déclencher une alerte.
     return 2 if resume["a_signaler"] else 0

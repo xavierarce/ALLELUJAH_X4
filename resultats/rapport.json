@@ -1,11 +1,11 @@
 {
   "meta": {
-    "genere_le": "2026-09-08T16:31:37",
+    "genere_le": "2026-09-08T16:42:40",
     "source": "API Recherche d'entreprises (recherche-entreprises.api.gouv.fr)",
     "parametres": {
-      "fichier_entree": "donnees/prospects.csv",
-      "workers": 5,
-      "duree_secondes": 0.94
+      "fichier_entree": "donnees/prospects.json",
+      "workers": 1,
+      "duree_secondes": 4.12
     },
     "resume": {
       "total": 12,
@@ -27,7 +27,7 @@
   },
   "prospects": [
     {
-      "numero_ligne": 2,
+      "rang": 1,
       "nom_saisi": "ORANGE",
       "identifiant_saisi": "380129866",
       "contact": "marie.leroy@cabinet.fr",
@@ -46,7 +46,7 @@
       "url_annuaire": "https://annuaire-entreprises.data.gouv.fr/entreprise/380129866"
     },
     {
-      "numero_ligne": 3,
+      "rang": 2,
       "nom_saisi": "CARREFOUR",
       "identifiant_saisi": "503932568",
       "contact": "marie.leroy@cabinet.fr",
@@ -65,7 +65,7 @@
       "url_annuaire": "https://annuaire-entreprises.data.gouv.fr/entreprise/503932568"
     },
     {
-      "numero_ligne": 4,
+      "rang": 3,
       "nom_saisi": "FREDERIC CONSEIL",
       "identifiant_saisi": "851643189",
       "contact": "paul.durand@cabinet.fr",
@@ -84,7 +84,7 @@
       "url_annuaire": "https://annuaire-entreprises.data.gouv.fr/entreprise/851643189"
     },
     {
-      "numero_ligne": 5,
+      "rang": 4,
       "nom_saisi": "BOULANGERIE DE L'EUROPE",
       "identifiant_saisi": "923804504",
       "contact": "paul.durand@cabinet.fr",
@@ -103,7 +103,7 @@
       "url_annuaire": "https://annuaire-entreprises.data.gouv.fr/entreprise/923804504"
     },
     {
-      "numero_ligne": 6,
+      "rang": 5,
       "nom_saisi": "JACQUES JUND",
       "identifiant_saisi": "999999998",
       "contact": "sonia.bak@cabinet.fr",
@@ -122,7 +122,7 @@
       "url_annuaire": "https://annuaire-entreprises.data.gouv.fr/entreprise/999999998"
     },
     {
-      "numero_ligne": 7,
+      "rang": 6,
       "nom_saisi": "Société Générale",
       "identifiant_saisi": "",
       "contact": "sonia.bak@cabinet.fr",
@@ -141,7 +141,7 @@
       "url_annuaire": "https://annuaire-entreprises.data.gouv.fr/entreprise/552120222"
     },
     {
-      "numero_ligne": 8,
+      "rang": 7,
       "nom_saisi": "Dupont Consulting",
       "identifiant_saisi": "",
       "contact": "paul.durand@cabinet.fr",
@@ -160,7 +160,7 @@
       "url_annuaire": "https://annuaire-entreprises.data.gouv.fr/entreprise/901721860"
     },
     {
-      "numero_ligne": 9,
+      "rang": 8,
       "nom_saisi": "Entreprise Qui N Existe Pas 12345",
       "identifiant_saisi": "",
       "contact": "marie.leroy@cabinet.fr",
@@ -179,7 +179,7 @@
       "url_annuaire": ""
     },
     {
-      "numero_ligne": 10,
+      "rang": 9,
       "nom_saisi": "",
       "identifiant_saisi": "000000000",
       "contact": "sonia.bak@cabinet.fr",
@@ -198,7 +198,7 @@
       "url_annuaire": ""
     },
     {
-      "numero_ligne": 11,
+      "rang": 10,
       "nom_saisi": "MAUVAISE SAISIE SARL",
       "identifiant_saisi": "123456789",
       "contact": "paul.durand@cabinet.fr",
@@ -217,7 +217,7 @@
       "url_annuaire": ""
     },
     {
-      "numero_ligne": 12,
+      "rang": 11,
       "nom_saisi": "TROP COURT",
       "identifiant_saisi": "12345678",
       "contact": "marie.leroy@cabinet.fr",
@@ -236,7 +236,7 @@
       "url_annuaire": ""
     },
     {
-      "numero_ligne": 13,
+      "rang": 12,
       "nom_saisi": "ORANGE MAIS FAUX NOM",
       "identifiant_saisi": "380129866",
       "contact": "sonia.bak@cabinet.fr",

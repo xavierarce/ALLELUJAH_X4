@@ -134,14 +134,15 @@ def _jours_depuis(chaine_date, aujourdhui):
 
 
 def fiche_vide(prospect):
-    """Squelette de résultat : toutes les colonnes de sortie, à blanc.
+    """Squelette de résultat : tous les champs de sortie, à blanc.
 
-    Garantit que **chaque ligne du CSV a les mêmes colonnes**, même quand la
-    vérification a échoué. C'est ce qui rend le livrable exploitable en aval.
+    C'est le **contrat du livrable** : chaque fiche du rapport JSON porte les
+    mêmes clés, même quand la vérification a échoué. Sans ça, un script en aval
+    devrait tester la présence de chaque champ.
     """
     return {
-        # Rappel de l'entrée, pour que le cabinet retrouve ses lignes
-        "numero_ligne": prospect.numero_ligne,
+        # Rappel de l'entrée, pour que le cabinet retrouve ses prospects
+        "rang": prospect.rang,
         "nom_saisi": prospect.nom,
         "identifiant_saisi": prospect.identifiant_saisi,
         "contact": prospect.contact,

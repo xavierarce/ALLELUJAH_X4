@@ -1,0 +1,15 @@
+[
+  { "nom": "ORANGE",                            "siren": "380129866", "contact": "marie.leroy@cabinet.fr" },
+  { "nom": "CARREFOUR",                         "siren": "503932568", "contact": "marie.leroy@cabinet.fr" },
+  { "nom": "FREDERIC CONSEIL",                  "siren": "851643189", "contact": "paul.durand@cabinet.fr" },
+  { "nom": "BOULANGERIE DE L'EUROPE",           "siren": "923804504", "contact": "paul.durand@cabinet.fr" },
+  { "nom": "JACQUES JUND",                      "siren": "999999998", "contact": "sonia.bak@cabinet.fr" },
+  { "nom": "Société Générale",                                        "contact": "sonia.bak@cabinet.fr" },
+  { "nom": "Dupont Consulting",                                       "contact": "paul.durand@cabinet.fr" },
+  { "nom": "Entreprise Qui N Existe Pas 12345",                       "contact": "marie.leroy@cabinet.fr" },
+  {                                             "siren": "000000000", "contact": "sonia.bak@cabinet.fr" },
+  { "nom": "MAUVAISE SAISIE SARL",              "siren": "123456789", "contact": "paul.durand@cabinet.fr" },
+  { "nom": "TROP COURT",                        "siren": "12345678",  "contact": "marie.leroy@cabinet.fr" },
+  { "nom": "ORANGE MAIS FAUX NOM",              "siren": "380129866", "contact": "sonia.bak@cabinet.fr" },
+  {}
+]
