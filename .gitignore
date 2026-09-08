@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 
 tests/__pycache__
+verificateur/__pycache__
