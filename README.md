@@ -124,8 +124,8 @@ Le reste est du contexte : `message` (la phrase à lire avant de décrocher le
 téléphone), les informations à jour (`nom_officiel`, `siren`, `siret_siege`,
 `adresse_siege`, `date_cessation`), le rappel de l'entrée (`rang`, `nom_saisi`,
 `identifiant_saisi`, `contact`) et deux champs de traçabilité
-(`score_correspondance`, à 100 quand la recherche s'est faite par identifiant ;
-`url_annuaire`, pour vérifier à la main en un clic).
+(`score_correspondance`, la part en % des mots du nom saisi retrouvés dans le
+nom officiel ; `url_annuaire`, pour vérifier à la main en un clic).
 
 **Toutes les fiches ont exactement les mêmes 14 clés**, même celles en échec
 (c'est le contrat `analyse.VERDICT_VIDE`, et un test le vérifie) : un script en
@@ -150,23 +150,44 @@ python3 -c "import json; r=json.load(open('resultats/rapport.json')); print(*[p[
 Un rôle par fichier, et dans chaque fichier une seule porte d'entrée :
 
 ```
-verif_prospects.py          150 l.  CLI, orchestration, parallélisation
-verificateur/entrees.py     146 l.  charger_prospects()  JSON → Prospect
+verif_prospects.py          156 l.  CLI, orchestration, parallélisation
+verificateur/entrees.py     161 l.  charger_prospects()  JSON → Prospect
 verificateur/api.py          84 l.  chercher()           un appel, avec retry
-verificateur/analyse.py     251 l.  analyser()           réponse API → verdict
-verificateur/sorties.py      87 l.  ecrire_rapport()     verdict → rapport.json
-tests/test_verificateur.py  408 l.  45 tests, hors ligne
+verificateur/analyse.py     295 l.  analyser()           réponse API → verdict
+verificateur/sorties.py      89 l.  ecrire_rapport()     verdict → rapport.json
+tests/test_verificateur.py  420 l.  46 tests, hors ligne
 ```
 
 Le flux se lit en trois lignes dans `verifier_prospect()` :
 
 ```python
 resultats = api.chercher(prospect.siren or prospect.nom)
-return analyse.analyser(prospect, resultats, aujourdhui)
+return analyse.analyser(prospect, resultats)
 ```
 
 `analyse.py` ne fait **aucun appel réseau** et `api.py` ne connaît **rien** du
 métier : c'est ce qui rend le cœur du programme testable hors ligne.
+
+### Comparer deux dénominations
+
+Sans identifiant, l'API répond par une recherche textuelle : le premier
+résultat n'est pas forcément le bon prospect. On note donc la ressemblance des
+noms avant de conclure.
+
+Le nom saisi et le nom officiel sont réduits à un **ensemble de mots** (majuscules,
+accents remplacés, ponctuation retirée, formes juridiques ignorées : « SARL
+Dupont » et « Dupont » donnent le même ensemble). Le score est la part des mots
+du nom saisi retrouvés dans le nom officiel :
+
+| Saisi | Officiel | Score |
+|---|---|---|
+| `FREDERIC CONSEIL` | `FREDERIC CONSEIL (TAXI SERVICES 22)` | 100 % |
+| `Société Générale` | `SOCIETE GENERALE (SG)` | 100 % |
+| `ORANGE MAIS FAUX NOM` | `ORANGE` | 25 % |
+
+Les mots en trop côté officiel ne pénalisent pas : l'API renvoie souvent
+« RAISON SOCIALE (SIGLE) ». En dessous de 75 %, l'outil signale
+`CORRESPONDANCE_INCERTAINE` au lieu d'affirmer une correspondance.
 
 ### Pourquoi des threads
 
@@ -176,8 +197,8 @@ jeu d'essai, deux exécutions à la suite :
 
 | Mode | Durée |
 |---|---|
-| `--sequentiel` (`max_workers=1`) | 4,12 s |
-| 5 threads (défaut) | 0,59 s |
+| `--sequentiel` (`max_workers=1`) | 3,32 s |
+| 5 threads (défaut) | 1,08 s |
 
 Le plafond de 5 threads ne vient pas de la machine mais de l'API, qui autorise
 **7 requêtes/seconde par adresse IP** : au-delà elle répond `429`.
@@ -212,7 +233,7 @@ et à relancer. C'est le point qui évite de rendre un livrable trompeur.
 python3 -m unittest discover -s tests -v
 ```
 
-45 tests, **aucun accès réseau** : les réponses de l'API sont rejouées à partir
+46 tests, **aucun accès réseau** : les réponses de l'API sont rejouées à partir
 de cas réels (y compris une société `etat_administratif = null` et une société
 cessée sans date de fermeture), et `requests.get` est remplacé par un faux pour
 tester le `429`, le `400` et le timeout.

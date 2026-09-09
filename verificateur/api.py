@@ -40,9 +40,9 @@ def _appeler(parametres):
             )
         except requests.Timeout:
             erreur = f"délai dépassé (> {DELAI_TIMEOUT} s)"
-        except requests.RequestException as exception:
+        except requests.RequestException:
             # Panne réseau, DNS injoignable, proxy…
-            erreur = f"réseau indisponible ({type(exception).__name__})"
+            erreur = "réseau indisponible"
         else:
             if reponse.status_code == 200:
                 try:
@@ -51,7 +51,7 @@ def _appeler(parametres):
                     # 200 sans JSON : proxy ou portail captif de wifi public.
                     raise ErreurAPI(
                         "réponse illisible : le serveur n'a pas renvoyé du JSON"
-                    ) from None
+                    )
 
             erreur = f"HTTP {reponse.status_code}"
             if reponse.status_code == 429:

@@ -37,16 +37,18 @@ def ecrire_rapport(fiches, resume, dossier, parametres):
         "prospects": fiches,
     }
 
+    # Accents lisibles dans le fichier, et un diff exploitable d'une exécution
+    # à l'autre.
+    texte = json.dumps(rapport, ensure_ascii=False, indent=2)
+
     chemin = os.path.join(dossier, NOM_JSON)
     try:
-        os.makedirs(dossier, exist_ok=True)
+        if not os.path.exists(dossier):
+            os.makedirs(dossier)
         with open(chemin, "w", encoding="utf-8") as fichier:
-            # Accents lisibles dans le fichier, et un diff exploitable d'une
-            # exécution à l'autre.
-            json.dump(rapport, fichier, ensure_ascii=False, indent=2)
-            fichier.write("\n")
+            fichier.write(texte + "\n")
     except OSError as erreur:
-        raise ErreurEcriture(f"Écriture impossible sur {chemin} : {erreur}") from erreur
+        raise ErreurEcriture(f"Écriture impossible sur {chemin} : {erreur}")
 
     logging.info(
         f"{len(fiches)} fiche(s) écrites, dont {resume['a_signaler']} à signaler"

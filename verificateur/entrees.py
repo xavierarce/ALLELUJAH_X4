@@ -9,9 +9,9 @@ import json
 import logging
 import re
 
-MOTIF_SIREN = re.compile(r"^\d{9}$")
-MOTIF_SIRET = re.compile(r"^\d{14}$")
-MOTIF_NON_CHIFFRE = re.compile(r"\D+")
+MOTIF_SIREN = r"^\d{9}$"
+MOTIF_SIRET = r"^\d{14}$"
+MOTIF_CHIFFRE = r"\d"
 
 # La première clé renseignée gagne.
 CLES_IDENTIFIANT = ("siren", "siret")
@@ -25,23 +25,23 @@ def cle_luhn_valide(numero):
     """Vérifie la clé de contrôle portée par le dernier chiffre d'un SIREN."""
     total = 0
     # Le rang 0 est le chiffre de contrôle, d'où le parcours à l'envers.
-    for rang, caractere in enumerate(reversed(numero)):
+    for rang, caractere in enumerate(numero[::-1]):
         chiffre = int(caractere)
         if rang % 2 == 1:
-            chiffre *= 2
+            chiffre = chiffre * 2
             if chiffre > 9:
-                chiffre -= 9
-        total += chiffre
+                chiffre = chiffre - 9
+        total = total + chiffre
     return total % 10 == 0
 
 
-def _motif_rejet(chiffres, saisi):
+def motif_rejet(chiffres, saisi):
     """Dit pourquoi un identifiant est inexploitable, ou ``None`` s'il est bon."""
     if not chiffres:
         # Pas d'identifiant : on cherchera par nom, ce n'est pas une erreur.
         return None
 
-    if not (MOTIF_SIREN.match(chiffres) or MOTIF_SIRET.match(chiffres)):
+    if not re.search(MOTIF_SIREN, chiffres) and not re.search(MOTIF_SIRET, chiffres):
         return (
             f"« {saisi} » n'est ni un SIREN (9 chiffres) ni un SIRET (14 chiffres)"
         )
@@ -65,38 +65,51 @@ class Prospect:
         self.contact = str(contact or "").strip()
         self.identifiant_saisi = str(identifiant_saisi or "").strip()
 
-        chiffres = MOTIF_NON_CHIFFRE.sub("", self.identifiant_saisi)
-        self.motif_rejet = _motif_rejet(chiffres, self.identifiant_saisi)
+        # « 380 129 866 » ou « 380.129.866 » : on ne garde que les chiffres.
+        chiffres = "".join(re.findall(MOTIF_CHIFFRE, self.identifiant_saisi))
+        self.motif_rejet = motif_rejet(chiffres, self.identifiant_saisi)
 
         # Les 9 premiers chiffres d'un SIRET sont son SIREN, et le SIREN est le
         # seul identifiant que l'API sait rechercher à l'identique.
-        self.siren = "" if self.motif_rejet else chiffres[:9]
+        if self.motif_rejet:
+            self.siren = ""
+        else:
+            self.siren = chiffres[:9]
 
-    @property
-    def libelle(self):
-        """Libellé court pour les logs et les messages."""
-        return self.nom or self.identifiant_saisi or f"prospect n°{self.rang}"
+        # Libellé court, pour les logs et les messages.
+        self.libelle = self.nom or self.identifiant_saisi or f"prospect n°{rang}"
 
 
-def _lire_json(chemin):
+def identifiant_de(entree):
+    """Renvoie l'identifiant d'une entrée JSON, ``""`` si aucune clé connue."""
+    for cle in CLES_IDENTIFIANT:
+        if entree.get(cle):
+            return entree[cle]
+    return ""
+
+
+def lire_json(chemin):
     """Lit le fichier et renvoie la liste brute des prospects."""
     try:
         with open(chemin, "r", encoding="utf-8") as fichier:
-            entrees = json.load(fichier)
+            texte = fichier.read()
     except FileNotFoundError:
-        raise FichierProspectsInvalide(f"Fichier introuvable : {chemin}") from None
+        raise FichierProspectsInvalide(f"Fichier introuvable : {chemin}")
     except PermissionError:
-        raise FichierProspectsInvalide(f"Accès refusé : {chemin}") from None
+        raise FichierProspectsInvalide(f"Accès refusé : {chemin}")
     except UnicodeDecodeError:
         raise FichierProspectsInvalide(
             f"{chemin} n'est pas encodé en UTF-8 — le réenregistrer en UTF-8."
-        ) from None
+        )
+
+    try:
+        entrees = json.loads(texte)
     except json.JSONDecodeError as erreur:
         # La position rend une virgule oubliée trouvable en dix secondes.
         raise FichierProspectsInvalide(
             f"{chemin} n'est pas du JSON valide — {erreur.msg} "
             f"(ligne {erreur.lineno}, colonne {erreur.colno})."
-        ) from None
+        )
 
     if not isinstance(entrees, list):
         raise FichierProspectsInvalide(
@@ -110,25 +123,26 @@ def charger_prospects(chemin):
     """Charge le fichier JSON et renvoie la liste des `Prospect` exploitables."""
     prospects = []
     ignores = 0
+    rang = 0
 
-    for rang, entree in enumerate(_lire_json(chemin), start=1):
+    for entree in lire_json(chemin):
+        rang = rang + 1
+
         if not isinstance(entree, dict):
             logging.warning(f"Prospect n°{rang} ignoré : ce n'est pas un objet JSON")
-            ignores += 1
+            ignores = ignores + 1
             continue
 
         prospect = Prospect(
             rang=rang,
             nom=entree.get("nom"),
-            identifiant_saisi=next(
-                (entree[cle] for cle in CLES_IDENTIFIANT if entree.get(cle)), ""
-            ),
+            identifiant_saisi=identifiant_de(entree),
             contact=entree.get("contact"),
         )
 
         if not prospect.nom and not prospect.identifiant_saisi:
             logging.warning(f"Prospect n°{rang} ignoré : ni nom ni identifiant")
-            ignores += 1
+            ignores = ignores + 1
             continue
 
         prospects.append(prospect)
@@ -139,8 +153,9 @@ def charger_prospects(chemin):
             f"({ignores} entrée(s) inutilisable(s))."
         )
 
-    logging.info(
-        f"{len(prospects)} prospect(s) chargé(s) depuis {chemin}"
-        + (f" — {ignores} entrée(s) ignorée(s)" if ignores else "")
-    )
+    message = f"{len(prospects)} prospect(s) chargé(s) depuis {chemin}"
+    if ignores:
+        message = message + f" — {ignores} entrée(s) ignorée(s)"
+    logging.info(message)
+
     return prospects

@@ -5,10 +5,8 @@ est-il encore en activité. Le verdict tient dans `etat_activite` et `alerte`.
 Aucun appel réseau ici, ce qui rend le module testable hors ligne.
 """
 
-import difflib
+import logging
 import re
-import unicodedata
-from collections import Counter
 from datetime import date, datetime
 
 ETAT_ACTIVE = "ACTIVE"
@@ -27,8 +25,8 @@ ALERTE_ERREUR_API = "ERREUR_API"
 # Le cas qui a piégé le cabinet : démarcher une société fermée depuis des mois.
 JOURS_CESSATION_RECENTE = 365
 
-# Ressemblance (0-100) au-dessus de laquelle un nom est considéré comme le bon,
-# réglée à la main sur notre jeu d'essai.
+# Part des mots du nom saisi qu'on doit retrouver pour valider une
+# correspondance, réglée à la main sur notre jeu d'essai.
 SEUIL_CORRESPONDANCE = 75
 
 URL_ANNUAIRE = "https://annuaire-entreprises.data.gouv.fr/entreprise/"
@@ -41,10 +39,15 @@ FORMES_JURIDIQUES = {
     "STE", "SOCIETE", "GROUPE", "ETS", "ETABLISSEMENTS", "ET",
 }
 
-MOTIF_SEPARATEURS = re.compile(r"[^A-Z0-9]+")
-MOTIF_PARENTHESES = re.compile(r"\([^)]*\)")
+ACCENTS = {
+    "À": "A", "Â": "A", "Ä": "A", "Ç": "C", "É": "E", "È": "E", "Ê": "E",
+    "Ë": "E", "Î": "I", "Ï": "I", "Ô": "O", "Ö": "O", "Ù": "U", "Û": "U",
+    "Ü": "U", "Ÿ": "Y",
+}
 
-# Contrat du livrable : toute fiche porte ces clés, même en échec, pour qu'un
+MOTIF_MOT = r"[A-Z0-9]+"
+
+# Champs du verdict, à blanc. Toute fiche les porte, même en échec, pour qu'un
 # script en aval n'ait jamais à tester la présence d'un champ.
 VERDICT_VIDE = {
     "etat_activite": ETAT_INCONNU,
@@ -60,90 +63,117 @@ VERDICT_VIDE = {
 }
 
 
-def normaliser(texte):
-    """Réduit une dénomination à une forme comparable.
+def mots_significatifs(nom):
+    """Réduit une dénomination à l'ensemble de ses mots comparables.
 
-    >>> normaliser("SARL Café de l'Étoile")
-    'CAFE DE L ETOILE'
+    >>> sorted(mots_significatifs("SARL Café de l'Étoile"))
+    ['CAFE', 'DE', 'ETOILE', 'L']
     """
-    if not texte:
-        return ""
+    texte = ""
+    for caractere in str(nom or "").upper():
+        texte = texte + ACCENTS.get(caractere, caractere)
 
-    # NFD sépare les lettres de leurs accents, qu'on jette ensuite.
-    sans_accent = unicodedata.normalize("NFD", texte.upper())
-    sans_accent = "".join(c for c in sans_accent if unicodedata.category(c) != "Mn")
+    tous = re.findall(MOTIF_MOT, texte)
 
-    mots = [m for m in MOTIF_SEPARATEURS.split(sans_accent) if m]
-    utiles = [m for m in mots if m not in FORMES_JURIDIQUES]
+    mots = set()
+    for mot in tous:
+        if mot not in FORMES_JURIDIQUES:
+            mots.add(mot)
 
     # Un nom fait *uniquement* de formes juridiques (« SARL ») ne doit pas
-    # devenir une chaîne vide.
-    return " ".join(utiles or mots)
+    # devenir un ensemble vide.
+    if not mots:
+        mots = set(tous)
+    return mots
 
 
 def score_ressemblance(nom_saisi, nom_officiel):
-    """Note de 0 (aucun rapport) à 100 (identique) la ressemblance de deux noms."""
-    reference = normaliser(nom_saisi)
-    if not reference:
+    """Part en % des mots du nom saisi retrouvés dans le nom officiel.
+
+    Les mots en trop côté officiel ne pénalisent pas : l'API renvoie souvent
+    « RAISON SOCIALE (SIGLE) ».
+    """
+    mots_saisis = mots_significatifs(nom_saisi)
+    if not mots_saisis:
         return 0
 
-    meilleur = 0
-    # L'API renvoie souvent « RAISON SOCIALE (SIGLE) » : le sigle en trop ne
-    # doit pas compter comme un écart.
-    for variante in (nom_officiel, MOTIF_PARENTHESES.sub("", nom_officiel or "")):
-        candidat = normaliser(variante)
-        if candidat:
-            ratio = difflib.SequenceMatcher(None, reference, candidat).ratio()
-            meilleur = max(meilleur, round(ratio * 100))
+    mots_officiels = mots_significatifs(nom_officiel)
 
-    return meilleur
+    communs = 0
+    for mot in mots_saisis:
+        if mot in mots_officiels:
+            communs += 1
+
+    return int(100 * communs / len(mots_saisis))
 
 
-def _fiche(prospect, **verdict):
-    """Assemble une fiche : rappel de l'entrée, puis le verdict."""
-    return {
+def fiche_vide(prospect):
+    """Fiche d'un prospect : rappel de l'entrée, verdict à blanc."""
+    fiche = {
         "rang": prospect.rang,
         "nom_saisi": prospect.nom,
         "identifiant_saisi": prospect.identifiant_saisi,
         "contact": prospect.contact,
-        **VERDICT_VIDE,
-        **verdict,
     }
+    for champ, valeur in VERDICT_VIDE.items():
+        fiche[champ] = valeur
+    return fiche
 
 
-def _donnees_officielles(entreprise):
-    """Extrait de la réponse API les informations à restituer au cabinet."""
+def meilleur_candidat(nom, resultats):
+    """Renvoie le résultat dont le nom ressemble le plus à `nom`."""
+    meilleur = resultats[0]
+    meilleur_score = score_ressemblance(nom, meilleur.get("nom_complet"))
+
+    for entreprise in resultats[1:]:
+        score = score_ressemblance(nom, entreprise.get("nom_complet"))
+        if score > meilleur_score:
+            meilleur = entreprise
+            meilleur_score = score
+
+    return meilleur
+
+
+def _remplir_donnees(fiche, entreprise):
+    """Recopie dans la fiche les informations officielles de l'entreprise."""
     # `.get()` partout : l'API omet des champs selon les entreprises, et un
     # KeyError ferait tomber le traitement pour une seule ligne.
-    siege = entreprise.get("siege") or {}
-    siren = entreprise.get("siren") or ""
-    return {
-        "nom_officiel": entreprise.get("nom_complet") or "",
-        "siren": siren,
-        "siret_siege": siege.get("siret") or "",
-        "adresse_siege": siege.get("adresse") or "",
-        "etat_activite": ETATS.get(entreprise.get("etat_administratif"), ETAT_INCONNU),
-        "date_cessation": (
-            entreprise.get("date_fermeture") or siege.get("date_fermeture") or ""
-        ),
-        "url_annuaire": URL_ANNUAIRE + siren if siren else "",
-    }
+    siege = entreprise.get("siege")
+    if not siege:
+        siege = {}
+
+    fiche["nom_officiel"] = entreprise.get("nom_complet", "")
+    fiche["siren"] = entreprise.get("siren", "")
+    fiche["siret_siege"] = siege.get("siret", "")
+    fiche["adresse_siege"] = siege.get("adresse", "")
+    fiche["etat_activite"] = ETATS.get(entreprise.get("etat_administratif"), ETAT_INCONNU)
+
+    cessation = entreprise.get("date_fermeture")
+    if not cessation:
+        cessation = siege.get("date_fermeture")
+    fiche["date_cessation"] = cessation if cessation else ""
+
+    if fiche["siren"]:
+        fiche["url_annuaire"] = URL_ANNUAIRE + fiche["siren"]
 
 
-def _jours_depuis(chaine_date, aujourdhui):
+def jours_depuis(chaine_date, aujourdhui):
     """Nombre de jours écoulés depuis une date ISO, ou ``None`` si illisible."""
     if not chaine_date:
         return None
     try:
-        return (aujourdhui - datetime.fromisoformat(chaine_date).date()).days
-    except (ValueError, TypeError):
+        jour = datetime.fromisoformat(chaine_date).date()
+    except ValueError:
+        logging.debug(f"Date illisible ignorée : {chaine_date}")
         return None
+    return (aujourdhui - jour).days
 
 
-def _qualifier(etat, date_cessation, aujourdhui):
+def qualifier(etat, date_cessation, aujourdhui):
     """Traduit un état d'activité en couple (alerte, message), du grave à l'anodin."""
     if etat == ETAT_CESSEE:
-        jours = _jours_depuis(date_cessation, aujourdhui)
+        jours = jours_depuis(date_cessation, aujourdhui)
+
         if jours is not None and jours <= JOURS_CESSATION_RECENTE:
             return ALERTE_CESSATION_RECENTE, (
                 f"Cessation d'activité le {date_cessation} (il y a {jours} jours) "
@@ -170,61 +200,58 @@ def _qualifier(etat, date_cessation, aujourdhui):
 
 def analyser(prospect, resultats, aujourdhui=None):
     """Construit la fiche d'un prospect à partir des résultats de l'API."""
-    aujourdhui = aujourdhui or date.today()
+    if aujourdhui is None:
+        aujourdhui = date.today()
+
+    fiche = fiche_vide(prospect)
 
     if not resultats:
-        return _fiche(
-            prospect,
-            alerte=ALERTE_INTROUVABLE,
-            message=(
-                f"Aucune entreprise pour « {prospect.libelle} » — non diffusible, "
-                f"radiée avant informatisation, ou erreur de saisie."
-            ),
+        fiche["alerte"] = ALERTE_INTROUVABLE
+        fiche["message"] = (
+            f"Aucune entreprise pour « {prospect.libelle} » — non diffusible, "
+            f"radiée avant informatisation, ou erreur de saisie."
         )
+        return fiche
 
     if prospect.siren:
         # Recherche exacte : l'API ne peut renvoyer que cette entreprise.
         entreprise = resultats[0]
     else:
-        # Recherche par nom : le plus ressemblant, pas le premier de la liste.
-        entreprise = max(
-            resultats,
-            key=lambda e: score_ressemblance(prospect.nom, e.get("nom_complet") or ""),
-        )
+        entreprise = meilleur_candidat(prospect.nom, resultats)
 
-    donnees = _donnees_officielles(entreprise)
-    alerte, message = _qualifier(
-        donnees["etat_activite"], donnees["date_cessation"], aujourdhui
+    _remplir_donnees(fiche, entreprise)
+    fiche["alerte"], fiche["message"] = qualifier(
+        fiche["etat_activite"], fiche["date_cessation"], aujourdhui
     )
 
     # Sans nom saisi, il n'y a rien à comparer : le SIREN suffit à identifier.
-    score = (
-        score_ressemblance(prospect.nom, donnees["nom_officiel"])
-        if prospect.nom
-        else 100
-    )
+    if prospect.nom:
+        fiche["score_correspondance"] = score_ressemblance(
+            prospect.nom, fiche["nom_officiel"]
+        )
+    else:
+        fiche["score_correspondance"] = 100
 
     # Le nom ne colle pas : on demande confirmation au lieu d'affirmer. Couvre la
     # recherche par nom trop vague et le SIREN saisi avec le nom d'une autre.
-    if score < SEUIL_CORRESPONDANCE:
-        alerte = alerte or ALERTE_CORRESPONDANCE_INCERTAINE
-        message = (
-            f"Correspondance douteuse ({score} %) entre « {prospect.nom} » et "
-            f"« {donnees['nom_officiel']} » — à confirmer. " + message
+    if fiche["score_correspondance"] < SEUIL_CORRESPONDANCE:
+        if not fiche["alerte"]:
+            fiche["alerte"] = ALERTE_CORRESPONDANCE_INCERTAINE
+        fiche["message"] = (
+            f"Correspondance douteuse ({fiche['score_correspondance']} %) entre "
+            f"« {prospect.nom} » et « {fiche['nom_officiel']} » — à confirmer. "
+            + fiche["message"]
         )
 
-    return _fiche(
-        prospect, score_correspondance=score, alerte=alerte, message=message, **donnees
-    )
+    return fiche
 
 
 def fiche_identifiant_invalide(prospect):
     """Fiche d'un prospect rejeté avant tout appel API."""
-    return _fiche(
-        prospect,
-        alerte=ALERTE_IDENTIFIANT_INVALIDE,
-        message=f"Identifiant non vérifiable : {prospect.motif_rejet}.",
-    )
+    fiche = fiche_vide(prospect)
+    fiche["alerte"] = ALERTE_IDENTIFIANT_INVALIDE
+    fiche["message"] = f"Identifiant non vérifiable : {prospect.motif_rejet}."
+    return fiche
 
 
 def fiche_erreur_api(prospect, erreur):
@@ -233,19 +260,36 @@ def fiche_erreur_api(prospect, erreur):
     Une API en panne n'est pas une entreprise active : on la restitue comme
     « inconnu, à relancer » pour ne pas rendre un livrable trompeur.
     """
-    return _fiche(
-        prospect,
-        alerte=ALERTE_ERREUR_API,
-        message=f"Vérification impossible ({erreur}) — à relancer.",
-    )
+    fiche = fiche_vide(prospect)
+    fiche["alerte"] = ALERTE_ERREUR_API
+    fiche["message"] = f"Vérification impossible ({erreur}) — à relancer."
+    return fiche
 
 
 def compter(fiches):
     """Agrège les fiches en compteurs pour la synthèse et le rapport."""
-    alertes = [fiche["alerte"] for fiche in fiches if fiche["alerte"]]
+    par_etat = {}
+    par_alerte = {}
+    a_signaler = 0
+
+    for fiche in fiches:
+        etat = fiche["etat_activite"]
+        if etat in par_etat:
+            par_etat[etat] += 1
+        else:
+            par_etat[etat] = 1
+
+        alerte = fiche["alerte"]
+        if alerte:
+            a_signaler += 1
+            if alerte in par_alerte:
+                par_alerte[alerte] += 1
+            else:
+                par_alerte[alerte] = 1
+
     return {
         "total": len(fiches),
-        "a_signaler": len(alertes),
-        "par_etat": dict(Counter(fiche["etat_activite"] for fiche in fiches)),
-        "par_alerte": dict(Counter(alertes)),
+        "a_signaler": a_signaler,
+        "par_etat": par_etat,
+        "par_alerte": par_alerte,
     }

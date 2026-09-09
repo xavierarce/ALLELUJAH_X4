@@ -14,7 +14,6 @@ import logging
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
 
 from verificateur import analyse, api, entrees, sorties
 
@@ -25,7 +24,7 @@ DOSSIER_SORTIE_DEFAUT = "resultats"
 WORKERS = 5
 
 
-def verifier_prospect(prospect, aujourdhui):
+def verifier_prospect(prospect):
     """Vérifie un prospect et renvoie sa fiche.
 
     Exécutée par chaque thread du pool, elle ne lève jamais d'exception : un
@@ -38,7 +37,7 @@ def verifier_prospect(prospect, aujourdhui):
 
     try:
         resultats = api.chercher(prospect.siren or prospect.nom)
-        return analyse.analyser(prospect, resultats, aujourdhui)
+        return analyse.analyser(prospect, resultats)
 
     except api.ErreurAPI as erreur:
         logging.error(f"{prospect.libelle} : {erreur}")
@@ -46,11 +45,11 @@ def verifier_prospect(prospect, aujourdhui):
 
     except Exception as erreur:
         # Un bug inattendu ne doit pas tuer silencieusement un thread.
-        logging.exception(f"{prospect.libelle} : erreur inattendue")
+        logging.error(f"{prospect.libelle} : erreur inattendue — {erreur}")
         return analyse.fiche_erreur_api(prospect, f"erreur interne : {erreur}")
 
 
-def verifier_lot(prospects, workers, aujourdhui):
+def verifier_lot(prospects, workers):
     """Vérifie les prospects en parallèle et renvoie les fiches dans l'ordre.
 
     Les appels API sont I/O-bound : le programme attend le réseau au lieu de
@@ -61,7 +60,7 @@ def verifier_lot(prospects, workers, aujourdhui):
     with ThreadPoolExecutor(max_workers=workers) as executor:
         # `.map()` conserve l'ordre d'entrée : le rapport reste aligné sur le
         # fichier du cabinet.
-        return list(executor.map(lambda p: verifier_prospect(p, aujourdhui), prospects))
+        return list(executor.map(verifier_prospect, prospects))
 
 
 def analyser_arguments():
@@ -114,11 +113,17 @@ def main():
         # Code non nul : le script est utilisable dans un cron.
         return 1
 
-    workers = 1 if args.sequentiel else min(WORKERS, len(prospects))
+    if args.sequentiel:
+        workers = 1
+    elif len(prospects) < WORKERS:
+        # Inutile d'ouvrir plus de threads que de prospects à traiter.
+        workers = len(prospects)
+    else:
+        workers = WORKERS
 
     debut = time.time()
     try:
-        fiches = verifier_lot(prospects, workers, date.today())
+        fiches = verifier_lot(prospects, workers)
     except KeyboardInterrupt:
         logging.warning("Interruption demandée — aucun rapport écrit")
         return 130
@@ -133,7 +138,8 @@ def main():
             parametres={
                 "fichier_entree": args.fichier,
                 "workers": workers,
-                "duree_secondes": round(duree, 2),
+                # Deux décimales suffisent, et le JSON reste lisible.
+                "duree_secondes": float(f"{duree:.2f}"),
             },
         )
     except sorties.ErreurEcriture as erreur:

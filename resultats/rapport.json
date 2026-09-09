@@ -1,11 +1,11 @@
 {
   "meta": {
-    "genere_le": "2026-09-09T09:39:52",
+    "genere_le": "2026-09-09T09:50:54",
     "source": "API Recherche d'entreprises (recherche-entreprises.api.gouv.fr)",
     "parametres": {
       "fichier_entree": "donnees/prospects.json",
       "workers": 5,
-      "duree_secondes": 0.98
+      "duree_secondes": 2.68
     },
     "resume": {
       "total": 12,
@@ -135,7 +135,7 @@
       "siret_siege": "90172186000012",
       "adresse_siege": "20 RUE DU PONT 80600 RAINCHEVAL",
       "date_cessation": "",
-      "score_correspondance": 94,
+      "score_correspondance": 100,
       "url_annuaire": "https://annuaire-entreprises.data.gouv.fr/entreprise/901721860"
     },
     {
@@ -209,13 +209,13 @@
       "contact": "sonia.bak@cabinet.fr",
       "etat_activite": "ACTIVE",
       "alerte": "CORRESPONDANCE_INCERTAINE",
-      "message": "Correspondance douteuse (46 %) entre « ORANGE MAIS FAUX NOM » et « ORANGE » — à confirmer. Entreprise active, informations à jour.",
+      "message": "Correspondance douteuse (25 %) entre « ORANGE MAIS FAUX NOM » et « ORANGE » — à confirmer. Entreprise active, informations à jour.",
       "nom_officiel": "ORANGE",
       "siren": "380129866",
       "siret_siege": "38012986648625",
       "adresse_siege": "111 QUAI DU PRESIDENT ROOSEVELT 92130 ISSY-LES-MOULINEAUX",
       "date_cessation": "",
-      "score_correspondance": 46,
+      "score_correspondance": 25,
       "url_annuaire": "https://annuaire-entreprises.data.gouv.fr/entreprise/380129866"
     }
   ]

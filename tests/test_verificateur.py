@@ -97,19 +97,25 @@ class TestValidationIdentifiant(unittest.TestCase):
 
 class TestCorrespondanceDeNom(unittest.TestCase):
     def test_accents_et_ponctuation_supprimes(self):
-        self.assertEqual(analyse.normaliser("Café de l'Étoile"), "CAFE DE L ETOILE")
+        self.assertEqual(
+            analyse.mots_significatifs("Café de l'Étoile"),
+            {"CAFE", "DE", "L", "ETOILE"},
+        )
 
     def test_forme_juridique_ignoree(self):
-        self.assertEqual(analyse.normaliser("SARL Dupont"), analyse.normaliser("Dupont"))
+        self.assertEqual(
+            analyse.mots_significatifs("SARL Dupont"),
+            analyse.mots_significatifs("Dupont"),
+        )
 
     def test_nom_uniquement_juridique_reste_non_vide(self):
-        self.assertEqual(analyse.normaliser("SARL"), "SARL")
+        self.assertEqual(analyse.mots_significatifs("SARL"), {"SARL"})
 
     def test_score_identique_est_100(self):
         self.assertEqual(analyse.score_ressemblance("ORANGE", "ORANGE"), 100)
 
     def test_score_ignore_le_sigle_entre_parentheses(self):
-        """L'API renvoie « RAISON SOCIALE (SIGLE) » : ce n'est pas un écart."""
+        """L'API renvoie « RAISON SOCIALE (SIGLE) » : le sigle en trop ne compte pas."""
         self.assertEqual(
             analyse.score_ressemblance(
                 "FREDERIC CONSEIL", "FREDERIC CONSEIL (TAXI SERVICES 22)"
@@ -121,6 +127,12 @@ class TestCorrespondanceDeNom(unittest.TestCase):
         self.assertLess(
             analyse.score_ressemblance("Dupont Consulting", "CARREFOUR"),
             analyse.SEUIL_CORRESPONDANCE,
+        )
+
+    def test_score_partiel(self):
+        """Deux mots saisis sur quatre retrouvés : 50 %."""
+        self.assertEqual(
+            analyse.score_ressemblance("ALPHA BETA GAMMA DELTA", "ALPHA BETA"), 50
         )
 
 
