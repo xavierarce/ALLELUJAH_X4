@@ -1,23 +1,12 @@
 #!/usr/bin/env python3
 """Vérificateur de prospects B2B — point d'entrée en ligne de commande.
 
-Projet de fin de module « Scripting Python / Cybersécurité » — SUJET 4.
+Pour chaque prospect d'une liste JSON, vérifie auprès de la base officielle des
+entreprises françaises si la société est toujours en activité, récupère ses
+informations à jour, et signale celles qui ont cessé leur activité.
 
-Besoin du client : avant tout démarchage, vérifier automatiquement pour chaque
-prospect d'une liste si l'entreprise est **toujours en activité**, récupérer ses
-**informations à jour**, et **signaler** celles qui ont cessé leur activité.
-
-Usage :
     python3 verif_prospects.py donnees/prospects.json
-    python3 verif_prospects.py donnees/prospects.json --sortie resultats/
-    python3 verif_prospects.py donnees/prospects.json --sequentiel   # pour comparer
-    python3 verif_prospects.py donnees/prospects.json --verbose
-
-Enchaînement des briques vues en cours :
-    Séance 4  argparse + requests (appel API, vérification du status_code)
-    Séance 5  regex + JSON (validation des SIREN, exploitation de la réponse)
-    Séance 6  fichiers + try/except (lecture de l'entrée, écriture du rapport)
-    Séance 7  ThreadPoolExecutor (parallélisation des appels — I/O-bound)
+    python3 verif_prospects.py donnees/prospects.json --sequentiel --verbose
 """
 
 import argparse
@@ -37,27 +26,17 @@ WORKERS = 5
 
 
 def verifier_prospect(prospect, aujourdhui):
-    """Vérifie **un** prospect et renvoie sa fiche.
+    """Vérifie un prospect et renvoie sa fiche.
 
-    C'est la fonction exécutée par chaque thread du pool. Elle ne lève jamais
-    d'exception : un prospect en échec produit une fiche « ERREUR_API » et le
-    traitement des autres continue. Sans ça, une seule API en vrac ferait
-    perdre tout le lot.
-
-    Args:
-        prospect (entrees.Prospect): la ligne à vérifier.
-        aujourdhui (datetime.date): date de référence.
-
-    Returns:
-        dict: la fiche analysée.
+    Exécutée par chaque thread du pool, elle ne lève jamais d'exception : un
+    prospect en échec produit une fiche « ERREUR_API » et les autres continuent.
+    Sans ça, une seule API en vrac ferait perdre tout le lot.
     """
-    # Identifiant présent mais incohérent : on rejette sans appeler l'API.
     if prospect.motif_rejet:
         logging.warning(f"{prospect.libelle} : {prospect.motif_rejet}")
         return analyse.fiche_identifiant_invalide(prospect)
 
     try:
-        # Par SIREN la recherche est exacte, par nom elle est approchée.
         resultats = api.chercher(prospect.siren or prospect.nom)
         return analyse.analyser(prospect, resultats, aujourdhui)
 
@@ -65,38 +44,28 @@ def verifier_prospect(prospect, aujourdhui):
         logging.error(f"{prospect.libelle} : {erreur}")
         return analyse.fiche_erreur_api(prospect, erreur)
 
-    except Exception as erreur:  # filet de sécurité du thread
-        # Un bug inattendu ne doit pas tuer silencieusement un thread : on le
-        # journalise et on le restitue comme une ligne en erreur.
+    except Exception as erreur:
+        # Un bug inattendu ne doit pas tuer silencieusement un thread.
         logging.exception(f"{prospect.libelle} : erreur inattendue")
         return analyse.fiche_erreur_api(prospect, f"erreur interne : {erreur}")
 
 
 def verifier_lot(prospects, workers, aujourdhui):
-    """Vérifie une liste de prospects en parallèle (Séance 7).
+    """Vérifie les prospects en parallèle et renvoie les fiches dans l'ordre.
 
-    Les appels API sont **I/O-bound** : le programme passe son temps à attendre
-    le réseau, pas à calculer. Les threads sont donc pertinents malgré le GIL.
-    Avec ``workers=1``, le pool exécute les appels un par un — c'est le mode
-    séquentiel, utile pour mesurer le gain.
-
-    Args:
-        prospects (list[entrees.Prospect]): les prospects à vérifier.
-        workers (int): nombre d'appels API simultanés.
-        aujourdhui (datetime.date): date de référence.
-
-    Returns:
-        list[dict]: les fiches, dans l'ordre du fichier d'entrée.
+    Les appels API sont I/O-bound : le programme attend le réseau au lieu de
+    calculer, les threads sont donc utiles malgré le GIL. Avec `workers=1`, le
+    pool exécute les appels un par un — c'est le mode séquentiel.
     """
     logging.info(f"Vérification de {len(prospects)} prospect(s) sur {workers} thread(s)")
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        # `.map()` conserve l'ordre de la liste d'entrée : le rapport est aligné
-        # sur le fichier d'entrée, ce qui facilite la relecture par le client.
+        # `.map()` conserve l'ordre d'entrée : le rapport reste aligné sur le
+        # fichier du cabinet.
         return list(executor.map(lambda p: verifier_prospect(p, aujourdhui), prospects))
 
 
 def analyser_arguments():
-    """Déclare et lit l'interface en ligne de commande (Séance 4)."""
+    """Déclare et lit l'interface en ligne de commande."""
     parseur = argparse.ArgumentParser(
         description=(
             "Vérifie auprès de la base officielle des entreprises françaises "
@@ -129,8 +98,8 @@ def analyser_arguments():
 def main():
     args = analyser_arguments()
 
-    # Les logs partent sur stderr : la synthèse finale reste seule sur stdout
-    # et peut donc être redirigée (`> rapport.txt`).
+    # Logs sur stderr : la synthèse finale reste seule sur stdout et peut donc
+    # être redirigée (`> rapport.txt`).
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s [%(levelname)-8s] %(message)s",
@@ -138,27 +107,23 @@ def main():
         stream=sys.stderr,
     )
 
-    # --- 1. Entrée : lecture et validation du JSON ---------------------------
     try:
         prospects = entrees.charger_prospects(args.fichier)
     except entrees.FichierProspectsInvalide as erreur:
         logging.error(erreur)
-        # Code de retour non nul : le script est utilisable dans un cron / CI.
+        # Code non nul : le script est utilisable dans un cron.
         return 1
 
-    # --- 2. Traitement : appels API parallélisés -----------------------------
     workers = 1 if args.sequentiel else min(WORKERS, len(prospects))
 
     debut = time.time()
     try:
         fiches = verifier_lot(prospects, workers, date.today())
     except KeyboardInterrupt:
-        # Ctrl+C pendant les appels réseau : on sort proprement, sans traceback.
         logging.warning("Interruption demandée — aucun rapport écrit")
         return 130
     duree = time.time() - debut
 
-    # --- 3. Sortie : rapport JSON + synthèse console -------------------------
     resume = analyse.compter(fiches)
     try:
         chemin = sorties.ecrire_rapport(

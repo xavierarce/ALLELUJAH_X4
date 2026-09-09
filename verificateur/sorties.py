@@ -1,13 +1,10 @@
-"""Écriture du livrable JSON (Séance 6 : fichiers + try/except).
-
-Une seule sortie, `resultats/rapport.json` :
+"""Écriture du livrable `resultats/rapport.json`.
 
     { "meta": { horodatage, source, paramètres, compteurs },
       "prospects": [ une fiche par prospect vérifié ] }
 
-Une fiche dont `alerte` est vide n'a rien à signaler ; toutes les autres sont
-les prospects à ne pas démarcher. C'est le « signalement clair » demandé par le
-client, et il s'extrait en une ligne :
+Une fiche dont `alerte` est vide n'a rien à signaler ; les autres sont les
+prospects à ne pas démarcher, extractibles en une ligne :
 
     jq '.prospects[] | select(.alerte != "")' resultats/rapport.json
 """
@@ -28,18 +25,7 @@ class ErreurEcriture(Exception):
 def ecrire_rapport(fiches, resume, dossier, parametres):
     """Écrit le rapport JSON et renvoie son chemin.
 
-    Args:
-        fiches (list[dict]): les fiches analysées.
-        resume (dict): les compteurs produits par `analyse.compter()`.
-        dossier (str): dossier de sortie, créé s'il n'existe pas.
-        parametres (dict): paramètres d'exécution, tracés dans le rapport pour
-            le rendre auditable.
-
-    Returns:
-        str: le chemin du fichier écrit.
-
-    Raises:
-        ErreurEcriture: si le dossier ou le fichier n'a pas pu être écrit.
+    `parametres` trace les options d'exécution, ce qui rend le rapport auditable.
     """
     rapport = {
         "meta": {
@@ -55,8 +41,8 @@ def ecrire_rapport(fiches, resume, dossier, parametres):
     try:
         os.makedirs(dossier, exist_ok=True)
         with open(chemin, "w", encoding="utf-8") as fichier:
-            # `ensure_ascii=False` garde les accents lisibles, `indent=2` rend
-            # le fichier relisible à l'œil et diffable d'une exécution à l'autre.
+            # Accents lisibles dans le fichier, et un diff exploitable d'une
+            # exécution à l'autre.
             json.dump(rapport, fichier, ensure_ascii=False, indent=2)
             fichier.write("\n")
     except OSError as erreur:
@@ -71,8 +57,8 @@ def ecrire_rapport(fiches, resume, dossier, parametres):
 def afficher_synthese(fiches, resume, duree, chemin):
     """Affiche la synthèse sur stdout, à destination de l'opérateur.
 
-    Les logs partent sur stderr : cette synthèse est donc seule sur stdout et
-    peut être redirigée vers un fichier ou envoyée par mail.
+    Les logs partent sur stderr : la synthèse est donc seule sur stdout et peut
+    être redirigée ou envoyée par mail.
     """
     largeur = 74
     print("\n" + "=" * largeur)

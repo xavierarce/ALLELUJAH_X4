@@ -1,14 +1,8 @@
-"""Métier : transformer une réponse de l'API en verdict pour le cabinet.
+"""Transforme une réponse de l'API en verdict exploitable par le cabinet.
 
-Deux questions, dans cet ordre :
-
-1. **Est-ce le bon prospect ?** Par SIREN la recherche est exacte ; par nom elle
-   est approchée, donc on mesure la ressemblance au lieu de croire l'API.
-2. **Est-il encore en activité ?** Et si non, depuis quand.
-
-Le verdict tient dans deux champs : `etat_activite` (ACTIVE / CESSEE / INCONNU)
-et `alerte` (vide = rien à signaler). Ce module ne fait **aucun appel réseau**,
-ce qui le rend testable hors ligne.
+Deux questions : est-ce le bon prospect (exact par SIREN, approché par nom), et
+est-il encore en activité. Le verdict tient dans `etat_activite` et `alerte`.
+Aucun appel réseau ici, ce qui rend le module testable hors ligne.
 """
 
 import difflib
@@ -17,13 +11,11 @@ import unicodedata
 from collections import Counter
 from datetime import date, datetime
 
-# --- Vocabulaire de sortie (valeurs stables, exploitables en aval) ------------
-
 ETAT_ACTIVE = "ACTIVE"
 ETAT_CESSEE = "CESSEE"
 ETAT_INCONNU = "INCONNU"
 
-# `alerte` : ce que le commercial doit voir avant de décrocher son téléphone.
+# Ce que le commercial doit voir avant de décrocher son téléphone.
 ALERTE_CESSATION_RECENTE = "CESSATION_RECENTE"
 ALERTE_CESSEE = "CESSEE"
 ALERTE_ETAT_INCONNU = "ETAT_INCONNU"
@@ -32,33 +24,28 @@ ALERTE_INTROUVABLE = "INTROUVABLE"
 ALERTE_IDENTIFIANT_INVALIDE = "IDENTIFIANT_INVALIDE"
 ALERTE_ERREUR_API = "ERREUR_API"
 
-# Une cessation de moins d'un an est signalée comme « récente » : c'est le cas
-# qui a piégé le cabinet (démarcher une société fermée depuis des mois).
+# Le cas qui a piégé le cabinet : démarcher une société fermée depuis des mois.
 JOURS_CESSATION_RECENTE = 365
 
-# Ressemblance (0-100) au-dessus de laquelle un nom est considéré comme le bon.
-# Valeur réglée à la main sur notre jeu d'essai.
+# Ressemblance (0-100) au-dessus de laquelle un nom est considéré comme le bon,
+# réglée à la main sur notre jeu d'essai.
 SEUIL_CORRESPONDANCE = 75
 
 URL_ANNUAIRE = "https://annuaire-entreprises.data.gouv.fr/entreprise/"
 
-# `etat_administratif` de l'unité légale, tel que renvoyé par l'API.
 ETATS = {"A": ETAT_ACTIVE, "C": ETAT_CESSEE}
 
-# Mots à retirer avant de comparer deux dénominations : « SARL Dupont » et
-# « Dupont » désignent la même société.
+# « SARL Dupont » et « Dupont » désignent la même société.
 FORMES_JURIDIQUES = {
     "SARL", "SAS", "SASU", "EURL", "SA", "SCI", "SNC", "EI", "EIRL",
     "STE", "SOCIETE", "GROUPE", "ETS", "ETABLISSEMENTS", "ET",
 }
 
 MOTIF_SEPARATEURS = re.compile(r"[^A-Z0-9]+")
-# L'API renvoie souvent « RAISON SOCIALE (SIGLE) » : on compare aussi le nom
-# saisi à la version sans la parenthèse.
 MOTIF_PARENTHESES = re.compile(r"\([^)]*\)")
 
-# Contrat du livrable : toute fiche porte exactement ces clés, même en échec.
-# Un script en aval n'a donc jamais à tester la présence d'un champ.
+# Contrat du livrable : toute fiche porte ces clés, même en échec, pour qu'un
+# script en aval n'ait jamais à tester la présence d'un champ.
 VERDICT_VIDE = {
     "etat_activite": ETAT_INCONNU,
     "alerte": "",
@@ -76,49 +63,33 @@ VERDICT_VIDE = {
 def normaliser(texte):
     """Réduit une dénomination à une forme comparable.
 
-    Passe en majuscules, retire les accents et la ponctuation, puis supprime
-    les formes juridiques.
-
-    Args:
-        texte (str): dénomination brute.
-
-    Returns:
-        str: forme normalisée, mots séparés par une espace simple.
-
-    Examples:
-        >>> normaliser("SARL Café de l'Étoile")
-        'CAFE DE L ETOILE'
+    >>> normaliser("SARL Café de l'Étoile")
+    'CAFE DE L ETOILE'
     """
     if not texte:
         return ""
 
-    # NFD sépare les lettres de leurs accents ; on jette ensuite les accents.
+    # NFD sépare les lettres de leurs accents, qu'on jette ensuite.
     sans_accent = unicodedata.normalize("NFD", texte.upper())
     sans_accent = "".join(c for c in sans_accent if unicodedata.category(c) != "Mn")
 
     mots = [m for m in MOTIF_SEPARATEURS.split(sans_accent) if m]
     utiles = [m for m in mots if m not in FORMES_JURIDIQUES]
 
-    # Si le nom n'était *que* des formes juridiques (ex. « SARL »), on garde les
-    # mots d'origine plutôt que de renvoyer une chaîne vide.
+    # Un nom fait *uniquement* de formes juridiques (« SARL ») ne doit pas
+    # devenir une chaîne vide.
     return " ".join(utiles or mots)
 
 
 def score_ressemblance(nom_saisi, nom_officiel):
-    """Note de 0 à 100 la ressemblance entre deux dénominations.
-
-    Args:
-        nom_saisi (str): ce que le cabinet a tapé.
-        nom_officiel (str): `nom_complet` renvoyé par l'API.
-
-    Returns:
-        int: 100 = identique après normalisation, 0 = aucun rapport.
-    """
+    """Note de 0 (aucun rapport) à 100 (identique) la ressemblance de deux noms."""
     reference = normaliser(nom_saisi)
     if not reference:
         return 0
 
     meilleur = 0
+    # L'API renvoie souvent « RAISON SOCIALE (SIGLE) » : le sigle en trop ne
+    # doit pas compter comme un écart.
     for variante in (nom_officiel, MOTIF_PARENTHESES.sub("", nom_officiel or "")):
         candidat = normaliser(variante)
         if candidat:
@@ -129,11 +100,7 @@ def score_ressemblance(nom_saisi, nom_officiel):
 
 
 def _fiche(prospect, **verdict):
-    """Assemble une fiche : rappel de l'entrée, puis le verdict.
-
-    Les champs non fournis restent à blanc, ce qui garantit des fiches de même
-    forme quelle que soit l'issue de la vérification.
-    """
+    """Assemble une fiche : rappel de l'entrée, puis le verdict."""
     return {
         "rang": prospect.rang,
         "nom_saisi": prospect.nom,
@@ -145,11 +112,9 @@ def _fiche(prospect, **verdict):
 
 
 def _donnees_officielles(entreprise):
-    """Extrait de la réponse API les informations à restituer au cabinet.
-
-    `.get()` partout : l'API omet des champs selon les entreprises, et un
-    KeyError ferait tomber le traitement pour une seule ligne.
-    """
+    """Extrait de la réponse API les informations à restituer au cabinet."""
+    # `.get()` partout : l'API omet des champs selon les entreprises, et un
+    # KeyError ferait tomber le traitement pour une seule ligne.
     siege = entreprise.get("siege") or {}
     siren = entreprise.get("siren") or ""
     return {
@@ -158,7 +123,6 @@ def _donnees_officielles(entreprise):
         "siret_siege": siege.get("siret") or "",
         "adresse_siege": siege.get("adresse") or "",
         "etat_activite": ETATS.get(entreprise.get("etat_administratif"), ETAT_INCONNU),
-        # Date de cessation : de l'unité légale, sinon celle du siège.
         "date_cessation": (
             entreprise.get("date_fermeture") or siege.get("date_fermeture") or ""
         ),
@@ -177,16 +141,7 @@ def _jours_depuis(chaine_date, aujourdhui):
 
 
 def _qualifier(etat, date_cessation, aujourdhui):
-    """Traduit l'état d'activité en (alerte, message), du plus grave au plus anodin.
-
-    Args:
-        etat (str): `ETAT_ACTIVE`, `ETAT_CESSEE` ou `ETAT_INCONNU`.
-        date_cessation (str): date ISO de cessation, ``""`` si absente.
-        aujourdhui (datetime.date): date de référence.
-
-    Returns:
-        tuple[str, str]: l'alerte (vide si rien à signaler) et le message.
-    """
+    """Traduit un état d'activité en couple (alerte, message), du grave à l'anodin."""
     if etat == ETAT_CESSEE:
         jours = _jours_depuis(date_cessation, aujourdhui)
         if jours is not None and jours <= JOURS_CESSATION_RECENTE:
@@ -198,8 +153,7 @@ def _qualifier(etat, date_cessation, aujourdhui):
             return ALERTE_CESSEE, (
                 f"Entreprise cessée depuis le {date_cessation} — ne pas démarcher."
             )
-        # Cas réel rencontré : société marquée « C » sans aucune date de
-        # fermeture. On l'assume au lieu de faire planter le traitement.
+        # Cas réel rencontré : société marquée « C » sans date de fermeture.
         return ALERTE_CESSEE, (
             "Entreprise déclarée cessée, date non renseignée dans la base "
             "— ne pas démarcher."
@@ -215,16 +169,7 @@ def _qualifier(etat, date_cessation, aujourdhui):
 
 
 def analyser(prospect, resultats, aujourdhui=None):
-    """Construit la fiche d'un prospect à partir des résultats de l'API.
-
-    Args:
-        prospect (entrees.Prospect): la ligne d'entrée.
-        resultats (list[dict]): les `results` renvoyés par l'API.
-        aujourdhui (datetime.date | None): date de référence (tests).
-
-    Returns:
-        dict: la fiche complète.
-    """
+    """Construit la fiche d'un prospect à partir des résultats de l'API."""
     aujourdhui = aujourdhui or date.today()
 
     if not resultats:
@@ -241,7 +186,7 @@ def analyser(prospect, resultats, aujourdhui=None):
         # Recherche exacte : l'API ne peut renvoyer que cette entreprise.
         entreprise = resultats[0]
     else:
-        # Recherche par nom : on retient le plus ressemblant, pas le premier.
+        # Recherche par nom : le plus ressemblant, pas le premier de la liste.
         entreprise = max(
             resultats,
             key=lambda e: score_ressemblance(prospect.nom, e.get("nom_complet") or ""),
@@ -259,9 +204,8 @@ def analyser(prospect, resultats, aujourdhui=None):
         else 100
     )
 
-    # Le nom saisi ne colle pas : on ne l'affirme pas, on demande confirmation.
-    # Couvre les deux cas — recherche par nom trop vague, et SIREN saisi avec
-    # le nom d'une autre société.
+    # Le nom ne colle pas : on demande confirmation au lieu d'affirmer. Couvre la
+    # recherche par nom trop vague et le SIREN saisi avec le nom d'une autre.
     if score < SEUIL_CORRESPONDANCE:
         alerte = alerte or ALERTE_CORRESPONDANCE_INCERTAINE
         message = (
@@ -275,7 +219,7 @@ def analyser(prospect, resultats, aujourdhui=None):
 
 
 def fiche_identifiant_invalide(prospect):
-    """Fiche d'une ligne rejetée avant tout appel API (identifiant incohérent)."""
+    """Fiche d'un prospect rejeté avant tout appel API."""
     return _fiche(
         prospect,
         alerte=ALERTE_IDENTIFIANT_INVALIDE,
@@ -284,10 +228,10 @@ def fiche_identifiant_invalide(prospect):
 
 
 def fiche_erreur_api(prospect, erreur):
-    """Fiche d'une ligne dont la vérification a échoué côté réseau.
+    """Fiche d'un prospect dont la vérification a échoué côté réseau.
 
-    Point d'honnêteté du livrable : une API en panne n'est **pas** une
-    entreprise active. On la restitue comme « inconnu, à relancer ».
+    Une API en panne n'est pas une entreprise active : on la restitue comme
+    « inconnu, à relancer » pour ne pas rendre un livrable trompeur.
     """
     return _fiche(
         prospect,
@@ -297,14 +241,7 @@ def fiche_erreur_api(prospect, erreur):
 
 
 def compter(fiches):
-    """Agrège les fiches en compteurs, pour la synthèse console et le rapport.
-
-    Args:
-        fiches (list[dict]): les fiches produites.
-
-    Returns:
-        dict: total, répartition par état et par alerte, nombre à signaler.
-    """
+    """Agrège les fiches en compteurs pour la synthèse et le rapport."""
     alertes = [fiche["alerte"] for fiche in fiches if fiche["alerte"]]
     return {
         "total": len(fiches),

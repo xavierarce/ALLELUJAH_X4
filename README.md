@@ -150,12 +150,12 @@ python3 -c "import json; r=json.load(open('resultats/rapport.json')); print(*[p[
 Un rôle par fichier, et dans chaque fichier une seule porte d'entrée :
 
 ```
-verif_prospects.py          185 l.  CLI (argparse), orchestration, threads     Séances 4 et 7
-verificateur/entrees.py     204 l.  charger_prospects()  JSON → Prospect       Séances 5 et 6
-verificateur/api.py         116 l.  chercher()           un appel, avec retry  Séance 4
-verificateur/analyse.py     314 l.  analyser()           réponse API → verdict Séance 5
-verificateur/sorties.py     101 l.  ecrire_rapport()     verdict → rapport.json Séance 6
-tests/test_verificateur.py  372 l.  45 tests, hors ligne
+verif_prospects.py          150 l.  CLI (argparse), orchestration, threads      Séances 4 et 7
+verificateur/entrees.py     146 l.  charger_prospects()  JSON → Prospect        Séances 5 et 6
+verificateur/api.py          84 l.  chercher()           un appel, avec retry   Séance 4
+verificateur/analyse.py     251 l.  analyser()           réponse API → verdict  Séance 5
+verificateur/sorties.py      87 l.  ecrire_rapport()     verdict → rapport.json Séance 6
+tests/test_verificateur.py  408 l.  45 tests, hors ligne
 ```
 
 Le flux se lit en trois lignes dans `verifier_prospect()` :

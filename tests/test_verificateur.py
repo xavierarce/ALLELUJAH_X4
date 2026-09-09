@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Tests du cœur métier — **sans aucun appel réseau**.
+"""Tests du cœur métier, sans aucun appel réseau.
 
-On rejoue des réponses de l'API (relevées sur
-`recherche-entreprises.api.gouv.fr`, y compris les cas tordus) et on vérifie le
-verdict produit. Intérêt : ces tests passent hors ligne, en une fraction de
-seconde, et verrouillent le comportement sur les cas limites rencontrés.
+On rejoue des réponses relevées sur l'API réelle, y compris ses cas tordus, et
+on vérifie le verdict produit.
 
-Lancement, depuis la racine du projet :
     python3 -m unittest discover -s tests -v
 """
 
@@ -17,16 +14,15 @@ import tempfile
 import unittest
 from datetime import date
 
-# Permet de lancer les tests sans installer le paquet.
+# Lancer les tests sans installer le paquet.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from verificateur import analyse, api, entrees, sorties  # noqa: E402
 
-# Date de référence figée : sans ça, un test sur « cessation récente »
-# finirait par échouer tout seul avec le temps.
+# Figée : sinon un test sur « cessation récente » finirait par échouer seul.
 AUJOURDHUI = date(2026, 9, 8)
 
-# --- Réponses d'API réelles, réduites aux champs utilisés --------------------
+# Réponses d'API réelles, réduites aux champs utilisés.
 
 ORANGE_ACTIVE = {
     "siren": "380129866",
@@ -47,7 +43,7 @@ CESSEE_RECENTE = {
     "siege": {"siret": "85164318900026", "adresse": "26 RUE DOCTEUR ROUX 22000 SAINT-BRIEUC"},
 }
 
-CESSEE_SANS_DATE = {          # cas réel : marquée « C », aucune date de fermeture
+CESSEE_SANS_DATE = {          # cas réel : marquée « C » sans date de fermeture
     "siren": "923804504",
     "nom_complet": "BOULANGERIE DE L'EUROPE (BOULANGERIE)",
     "etat_administratif": "C",
@@ -55,7 +51,7 @@ CESSEE_SANS_DATE = {          # cas réel : marquée « C », aucune date de fer
     "siege": {"siret": "92380450400010", "date_fermeture": None},
 }
 
-ETAT_NULL = {                 # cas réel : le SIREN existe, mais sans état
+ETAT_NULL = {                 # cas réel : SIREN existant, sans état administratif
     "siren": "999999998",
     "nom_complet": "JACQUES JUND",
     "etat_administratif": None,
@@ -69,8 +65,6 @@ def prospect(nom="", identifiant="", rang=1):
 
 
 class TestValidationIdentifiant(unittest.TestCase):
-    """Séance 5 : la regex et la clé de Luhn filtrent avant tout appel API."""
-
     def test_siren_reel_valide(self):
         self.assertTrue(entrees.cle_luhn_valide("380129866"))     # ORANGE
 
@@ -189,7 +183,7 @@ class TestAnalyseParSiren(unittest.TestCase):
         self.assertEqual(fiche["alerte"], "")
 
     def test_champs_manquants_ne_font_pas_planter(self):
-        # Une entreprise réduite à son SIREN : aucun KeyError ne doit sortir.
+        # Entreprise réduite à son SIREN : aucun KeyError ne doit sortir.
         fiche = analyse.analyser(
             prospect("", "380129866"), [{"siren": "380129866"}], AUJOURDHUI
         )
@@ -324,8 +318,7 @@ class TestAppelApi(unittest.TestCase):
 
     def setUp(self):
         self.appels = []
-        # On neutralise l'attente entre deux tentatives : le test doit rester
-        # instantané.
+        # Attente neutralisée : le test doit rester instantané.
         self._attente = api.ATTENTE
         api.ATTENTE = 0
 
@@ -400,16 +393,14 @@ class TestRapportJson(unittest.TestCase):
             with open(chemin, encoding="utf-8") as fichier:
                 rapport = json.load(fichier)
 
-        # Le bloc meta rend l'exécution auditable.
         self.assertEqual(rapport["meta"]["resume"]["a_signaler"], 1)
         self.assertIn("genere_le", rapport["meta"])
         self.assertEqual(rapport["meta"]["parametres"]["fichier_entree"], "test.json")
 
-        # Les prospects à ne pas démarcher = ceux qui portent une alerte.
+        # Les prospects à ne pas démarcher sont ceux qui portent une alerte.
         signales = [p for p in rapport["prospects"] if p["alerte"]]
         self.assertEqual(len(signales), 1)
         self.assertEqual(signales[0]["alerte"], analyse.ALERTE_CESSATION_RECENTE)
-        # Les accents ne doivent pas être échappés en \uXXXX.
         self.assertIn("FREDERIC CONSEIL", signales[0]["nom_officiel"])
 
 

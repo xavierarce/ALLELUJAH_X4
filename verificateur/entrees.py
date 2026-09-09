@@ -1,27 +1,19 @@
-"""Lecture et validation du fichier JSON de prospects (Séances 5 et 6).
+"""Lecture et validation du fichier JSON de prospects.
 
-Format attendu — un tableau, un objet par prospect :
+Format attendu — un tableau d'objets, clés `nom`, `siren` ou `siret`, `contact` :
 
-    [
-      {"nom": "ORANGE", "siren": "380129866", "contact": "marie@cabinet.fr"},
-      {"nom": "Société Générale"}
-    ]
-
-Clés reconnues : `nom`, `siren` **ou** `siret`, `contact`. Le module valide les
-identifiants (regex + clé de Luhn) pour rejeter les fautes de frappe **sans
-dépenser un appel API**, et ignore les entrées sans nom ni identifiant.
+    [{"nom": "ORANGE", "siren": "380129866", "contact": "marie@cabinet.fr"}]
 """
 
 import json
 import logging
 import re
 
-# Séance 5 : les motifs regex qui valident la *forme* de l'identifiant.
 MOTIF_SIREN = re.compile(r"^\d{9}$")
 MOTIF_SIRET = re.compile(r"^\d{14}$")
 MOTIF_NON_CHIFFRE = re.compile(r"\D+")
 
-# Clés acceptées pour l'identifiant. La première renseignée gagne.
+# La première clé renseignée gagne.
 CLES_IDENTIFIANT = ("siren", "siret")
 
 
@@ -30,60 +22,32 @@ class FichierProspectsInvalide(Exception):
 
 
 def cle_luhn_valide(numero):
-    """Vérifie la clé de contrôle de Luhn d'un SIREN.
-
-    Le dernier chiffre d'un SIREN est une clé de contrôle : en doublant un
-    chiffre sur deux en partant de la droite, la somme obtenue doit être un
-    multiple de 10.
-
-    Args:
-        numero (str): chaîne composée uniquement de chiffres.
-
-    Returns:
-        bool: ``True`` si la clé est cohérente.
-
-    Examples:
-        >>> cle_luhn_valide("380129866")   # ORANGE
-        True
-        >>> cle_luhn_valide("123456789")   # faute de frappe
-        False
-    """
+    """Vérifie la clé de contrôle portée par le dernier chiffre d'un SIREN."""
     total = 0
-    # On parcourt à l'envers : le rang 0 est le chiffre de contrôle.
+    # Le rang 0 est le chiffre de contrôle, d'où le parcours à l'envers.
     for rang, caractere in enumerate(reversed(numero)):
         chiffre = int(caractere)
-        if rang % 2 == 1:            # un chiffre sur deux est doublé
+        if rang % 2 == 1:
             chiffre *= 2
             if chiffre > 9:
-                chiffre -= 9         # équivaut à additionner les deux chiffres
+                chiffre -= 9
         total += chiffre
     return total % 10 == 0
 
 
 def _motif_rejet(chiffres, saisi):
-    """Dit pourquoi un identifiant est inexploitable, ou ``None`` s'il est bon.
-
-    Args:
-        chiffres (str): l'identifiant réduit à ses chiffres.
-        saisi (str): l'identifiant tel que saisi, pour le message.
-
-    Returns:
-        str | None: le motif de rejet, ou ``None``.
-    """
+    """Dit pourquoi un identifiant est inexploitable, ou ``None`` s'il est bon."""
     if not chiffres:
         # Pas d'identifiant : on cherchera par nom, ce n'est pas une erreur.
         return None
 
     if not (MOTIF_SIREN.match(chiffres) or MOTIF_SIRET.match(chiffres)):
         return (
-            f"« {saisi} » n'est ni un SIREN (9 chiffres) "
-            f"ni un SIRET (14 chiffres)"
+            f"« {saisi} » n'est ni un SIREN (9 chiffres) ni un SIRET (14 chiffres)"
         )
 
     if not cle_luhn_valide(chiffres[:9]):
-        return (
-            f"clé de contrôle invalide pour « {saisi} » (probable faute de frappe)"
-        )
+        return f"clé de contrôle invalide pour « {saisi} » (probable faute de frappe)"
 
     return None
 
@@ -91,13 +55,8 @@ def _motif_rejet(chiffres, saisi):
 class Prospect:
     """Un prospect du fichier d'entrée, nettoyé et validé.
 
-    Attributes:
-        rang (int): position dans le tableau JSON, pour retrouver l'entrée.
-        nom (str): nom de l'entreprise tel que saisi.
-        contact (str): champ libre, repris à l'identique dans le rapport.
-        identifiant_saisi (str): identifiant tel que saisi (peut être vide).
-        siren (str): les 9 chiffres à envoyer à l'API, ``""`` si absent ou rejeté.
-        motif_rejet (str | None): renseigné si l'identifiant est inexploitable.
+    `siren` porte les 9 chiffres à envoyer à l'API, ou ``""`` si l'identifiant
+    est absent ou rejeté — dans ce dernier cas `motif_rejet` dit pourquoi.
     """
 
     def __init__(self, rang, nom, identifiant_saisi="", contact=""):
@@ -106,12 +65,11 @@ class Prospect:
         self.contact = str(contact or "").strip()
         self.identifiant_saisi = str(identifiant_saisi or "").strip()
 
-        # « 380 129 866 » ou « 380.129.866 » : on ne garde que les chiffres.
         chiffres = MOTIF_NON_CHIFFRE.sub("", self.identifiant_saisi)
         self.motif_rejet = _motif_rejet(chiffres, self.identifiant_saisi)
 
-        # Les 9 premiers chiffres d'un SIRET sont son SIREN — et le SIREN est
-        # le seul identifiant que l'API sait rechercher à l'identique.
+        # Les 9 premiers chiffres d'un SIRET sont son SIREN, et le SIREN est le
+        # seul identifiant que l'API sait rechercher à l'identique.
         self.siren = "" if self.motif_rejet else chiffres[:9]
 
     @property
@@ -121,11 +79,7 @@ class Prospect:
 
 
 def _lire_json(chemin):
-    """Lit le fichier et renvoie la liste brute des prospects.
-
-    Raises:
-        FichierProspectsInvalide: fichier absent, illisible, ou JSON mal formé.
-    """
+    """Lit le fichier et renvoie la liste brute des prospects."""
     try:
         with open(chemin, "r", encoding="utf-8") as fichier:
             entrees = json.load(fichier)
@@ -138,8 +92,7 @@ def _lire_json(chemin):
             f"{chemin} n'est pas encodé en UTF-8 — le réenregistrer en UTF-8."
         ) from None
     except json.JSONDecodeError as erreur:
-        # On remonte la position : c'est ce qui rend une virgule oubliée
-        # trouvable en dix secondes au lieu d'un quart d'heure.
+        # La position rend une virgule oubliée trouvable en dix secondes.
         raise FichierProspectsInvalide(
             f"{chemin} n'est pas du JSON valide — {erreur.msg} "
             f"(ligne {erreur.lineno}, colonne {erreur.colno})."
@@ -154,18 +107,7 @@ def _lire_json(chemin):
 
 
 def charger_prospects(chemin):
-    """Charge le fichier JSON et renvoie la liste des `Prospect`.
-
-    Args:
-        chemin (str): chemin du fichier JSON.
-
-    Returns:
-        list[Prospect]: les prospects exploitables, dans l'ordre du fichier.
-
-    Raises:
-        FichierProspectsInvalide: fichier absent, mal formé, ou sans aucun
-            prospect exploitable.
-    """
+    """Charge le fichier JSON et renvoie la liste des `Prospect` exploitables."""
     prospects = []
     ignores = 0
 

@@ -1,11 +1,11 @@
 {
   "meta": {
-    "genere_le": "2026-09-09T09:04:07",
+    "genere_le": "2026-09-09T09:39:52",
     "source": "API Recherche d'entreprises (recherche-entreprises.api.gouv.fr)",
     "parametres": {
       "fichier_entree": "donnees/prospects.json",
       "workers": 5,
-      "duree_secondes": 0.53
+      "duree_secondes": 0.98
     },
     "resume": {
       "total": 12,
