@@ -1,39 +1,29 @@
-"""Métier : transformer une réponse d'API en verdict exploitable par le cabinet.
+"""Métier : transformer une réponse de l'API en verdict pour le cabinet.
 
-Trois responsabilités :
+Deux questions, dans cet ordre :
 
-1. **Rapprocher** un prospect saisi à la main et une entreprise de la base. Par
-   identifiant c'est exact ; par nom c'est approché, et il faut donc mesurer la
-   ressemblance pour ne pas affirmer une correspondance douteuse.
-2. **Traduire** les codes de la base (`etat_administratif` valant ``"A"`` ou
-   ``"C"``) en information lisible.
-3. **Qualifier** le risque : cessée, cessation récente, état inconnu.
+1. **Est-ce le bon prospect ?** Par SIREN la recherche est exacte ; par nom elle
+   est approchée, donc on mesure la ressemblance au lieu de croire l'API.
+2. **Est-il encore en activité ?** Et si non, depuis quand.
 
-Ce module ne fait **aucun appel réseau** — ce qui le rend testable hors ligne
-(cf. `tests/test_verificateur.py`).
+Le verdict tient dans deux champs : `etat_activite` (ACTIVE / CESSEE / INCONNU)
+et `alerte` (vide = rien à signaler). Ce module ne fait **aucun appel réseau**,
+ce qui le rend testable hors ligne.
 """
 
 import difflib
 import re
 import unicodedata
+from collections import Counter
 from datetime import date, datetime
 
 # --- Vocabulaire de sortie (valeurs stables, exploitables en aval) ------------
 
-# statut_verification : qualité du rapprochement prospect ↔ base officielle
-STATUT_VERIFIE = "VERIFIE"                          # correspondance sûre
-STATUT_INCERTAIN = "INCERTAIN"                      # trouvé par nom, ressemblance faible
-STATUT_INTROUVABLE = "INTROUVABLE"                  # aucun résultat dans la base
-STATUT_IDENTIFIANT_INVALIDE = "IDENTIFIANT_INVALIDE"
-STATUT_ERREUR_API = "ERREUR_API"                    # on ne sait pas : l'appel a échoué
-
-# etat_activite : le cœur de la demande du client
 ETAT_ACTIVE = "ACTIVE"
 ETAT_CESSEE = "CESSEE"
 ETAT_INCONNU = "INCONNU"
 
-# alerte : ce que le commercial doit voir avant de décrocher son téléphone
-ALERTE_AUCUNE = ""
+# `alerte` : ce que le commercial doit voir avant de décrocher son téléphone.
 ALERTE_CESSATION_RECENTE = "CESSATION_RECENTE"
 ALERTE_CESSEE = "CESSEE"
 ALERTE_ETAT_INCONNU = "ETAT_INCONNU"
@@ -46,8 +36,8 @@ ALERTE_ERREUR_API = "ERREUR_API"
 # qui a piégé le cabinet (démarcher une société fermée depuis des mois).
 JOURS_CESSATION_RECENTE = 365
 
-# Ressemblance (0-100) au-dessus de laquelle une correspondance par nom est
-# considérée comme sûre. Valeur réglée à la main sur notre jeu d'essai.
+# Ressemblance (0-100) au-dessus de laquelle un nom est considéré comme le bon.
+# Valeur réglée à la main sur notre jeu d'essai.
 SEUIL_CORRESPONDANCE = 75
 
 URL_ANNUAIRE = "https://annuaire-entreprises.data.gouv.fr/entreprise/"
@@ -55,8 +45,8 @@ URL_ANNUAIRE = "https://annuaire-entreprises.data.gouv.fr/entreprise/"
 # `etat_administratif` de l'unité légale, tel que renvoyé par l'API.
 ETATS = {"A": ETAT_ACTIVE, "C": ETAT_CESSEE}
 
-# Mots à retirer avant de comparer deux dénominations : formes juridiques et
-# bruit de saisie. « SARL Dupont » et « Dupont » désignent la même société.
+# Mots à retirer avant de comparer deux dénominations : « SARL Dupont » et
+# « Dupont » désignent la même société.
 FORMES_JURIDIQUES = {
     "SARL", "SAS", "SASU", "EURL", "SA", "SCI", "SNC", "EI", "EIRL",
     "STE", "SOCIETE", "GROUPE", "ETS", "ETABLISSEMENTS", "ET",
@@ -66,6 +56,21 @@ MOTIF_SEPARATEURS = re.compile(r"[^A-Z0-9]+")
 # L'API renvoie souvent « RAISON SOCIALE (SIGLE) » : on compare aussi le nom
 # saisi à la version sans la parenthèse.
 MOTIF_PARENTHESES = re.compile(r"\([^)]*\)")
+
+# Contrat du livrable : toute fiche porte exactement ces clés, même en échec.
+# Un script en aval n'a donc jamais à tester la présence d'un champ.
+VERDICT_VIDE = {
+    "etat_activite": ETAT_INCONNU,
+    "alerte": "",
+    "message": "",
+    "nom_officiel": "",
+    "siren": "",
+    "siret_siege": "",
+    "adresse_siege": "",
+    "date_cessation": "",
+    "score_correspondance": "",
+    "url_annuaire": "",
+}
 
 
 def normaliser(texte):
@@ -123,6 +128,44 @@ def score_ressemblance(nom_saisi, nom_officiel):
     return meilleur
 
 
+def _fiche(prospect, **verdict):
+    """Assemble une fiche : rappel de l'entrée, puis le verdict.
+
+    Les champs non fournis restent à blanc, ce qui garantit des fiches de même
+    forme quelle que soit l'issue de la vérification.
+    """
+    return {
+        "rang": prospect.rang,
+        "nom_saisi": prospect.nom,
+        "identifiant_saisi": prospect.identifiant_saisi,
+        "contact": prospect.contact,
+        **VERDICT_VIDE,
+        **verdict,
+    }
+
+
+def _donnees_officielles(entreprise):
+    """Extrait de la réponse API les informations à restituer au cabinet.
+
+    `.get()` partout : l'API omet des champs selon les entreprises, et un
+    KeyError ferait tomber le traitement pour une seule ligne.
+    """
+    siege = entreprise.get("siege") or {}
+    siren = entreprise.get("siren") or ""
+    return {
+        "nom_officiel": entreprise.get("nom_complet") or "",
+        "siren": siren,
+        "siret_siege": siege.get("siret") or "",
+        "adresse_siege": siege.get("adresse") or "",
+        "etat_activite": ETATS.get(entreprise.get("etat_administratif"), ETAT_INCONNU),
+        # Date de cessation : de l'unité légale, sinon celle du siège.
+        "date_cessation": (
+            entreprise.get("date_fermeture") or siege.get("date_fermeture") or ""
+        ),
+        "url_annuaire": URL_ANNUAIRE + siren if siren else "",
+    }
+
+
 def _jours_depuis(chaine_date, aujourdhui):
     """Nombre de jours écoulés depuis une date ISO, ou ``None`` si illisible."""
     if not chaine_date:
@@ -133,98 +176,46 @@ def _jours_depuis(chaine_date, aujourdhui):
         return None
 
 
-def fiche_vide(prospect):
-    """Squelette de résultat : tous les champs de sortie, à blanc.
-
-    C'est le **contrat du livrable** : chaque fiche du rapport JSON porte les
-    mêmes clés, même quand la vérification a échoué. Sans ça, un script en aval
-    devrait tester la présence de chaque champ.
-    """
-    return {
-        # Rappel de l'entrée, pour que le cabinet retrouve ses prospects
-        "rang": prospect.rang,
-        "nom_saisi": prospect.nom,
-        "identifiant_saisi": prospect.identifiant_saisi,
-        "contact": prospect.contact,
-        # Verdict
-        "statut_verification": "",
-        "etat_activite": ETAT_INCONNU,
-        "alerte": ALERTE_AUCUNE,
-        "a_signaler": False,
-        "message": "",
-        # Données officielles à jour
-        "nom_officiel": "",
-        "siren": "",
-        "siret_siege": "",
-        "adresse_siege": "",
-        "date_creation": "",
-        "date_cessation": "",
-        # Traçabilité
-        "score_correspondance": "",
-        "url_annuaire": "",
-    }
-
-
-def _remplir(fiche, entreprise, aujourdhui):
-    """Recopie les champs de l'API dans la fiche et qualifie l'activité.
+def _qualifier(etat, date_cessation, aujourdhui):
+    """Traduit l'état d'activité en (alerte, message), du plus grave au plus anodin.
 
     Args:
-        fiche (dict): fiche à compléter (modifiée sur place).
-        entreprise (dict): un élément de `results` renvoyé par l'API.
-        aujourdhui (datetime.date): date de référence (injectée pour les tests).
+        etat (str): `ETAT_ACTIVE`, `ETAT_CESSEE` ou `ETAT_INCONNU`.
+        date_cessation (str): date ISO de cessation, ``""`` si absente.
+        aujourdhui (datetime.date): date de référence.
+
+    Returns:
+        tuple[str, str]: l'alerte (vide si rien à signaler) et le message.
     """
-    # `.get()` partout : l'API omet des champs selon les entreprises, et un
-    # KeyError ferait tomber tout le traitement pour une seule ligne.
-    siege = entreprise.get("siege") or {}
-
-    fiche["nom_officiel"] = entreprise.get("nom_complet") or ""
-    fiche["siren"] = entreprise.get("siren") or ""
-    fiche["siret_siege"] = siege.get("siret") or ""
-    fiche["adresse_siege"] = siege.get("adresse") or ""
-    fiche["date_creation"] = entreprise.get("date_creation") or ""
-
-    if fiche["siren"]:
-        fiche["url_annuaire"] = URL_ANNUAIRE + fiche["siren"]
-
-    fiche["etat_activite"] = ETATS.get(entreprise.get("etat_administratif"), ETAT_INCONNU)
-
-    # Date de cessation : au niveau de l'unité légale, sinon celle du siège.
-    date_cessation = entreprise.get("date_fermeture") or siege.get("date_fermeture") or ""
-    fiche["date_cessation"] = date_cessation
-    jours = _jours_depuis(date_cessation, aujourdhui)
-
-    # --- Alerte : du plus grave au plus anodin -------------------------------
-    if fiche["etat_activite"] == ETAT_CESSEE:
+    if etat == ETAT_CESSEE:
+        jours = _jours_depuis(date_cessation, aujourdhui)
         if jours is not None and jours <= JOURS_CESSATION_RECENTE:
-            fiche["alerte"] = ALERTE_CESSATION_RECENTE
-            fiche["message"] = (
+            return ALERTE_CESSATION_RECENTE, (
                 f"Cessation d'activité le {date_cessation} (il y a {jours} jours) "
                 f"— ne pas démarcher."
             )
-        elif date_cessation:
-            fiche["alerte"] = ALERTE_CESSEE
-            fiche["message"] = (
+        if date_cessation:
+            return ALERTE_CESSEE, (
                 f"Entreprise cessée depuis le {date_cessation} — ne pas démarcher."
             )
-        else:
-            # Cas réel rencontré : société marquée « C » sans aucune date de
-            # fermeture. On l'assume au lieu de faire planter le traitement.
-            fiche["alerte"] = ALERTE_CESSEE
-            fiche["message"] = (
-                "Entreprise déclarée cessée, date non renseignée dans la base "
-                "— ne pas démarcher."
-            )
+        # Cas réel rencontré : société marquée « C » sans aucune date de
+        # fermeture. On l'assume au lieu de faire planter le traitement.
+        return ALERTE_CESSEE, (
+            "Entreprise déclarée cessée, date non renseignée dans la base "
+            "— ne pas démarcher."
+        )
 
-    elif fiche["etat_activite"] == ETAT_INCONNU:
-        fiche["alerte"] = ALERTE_ETAT_INCONNU
-        fiche["message"] = (
+    if etat == ETAT_INCONNU:
+        return ALERTE_ETAT_INCONNU, (
             "État administratif absent de la base officielle "
             "— vérification manuelle nécessaire."
         )
 
+    return "", "Entreprise active, informations à jour."
 
-def analyser_par_identifiant(prospect, resultats, aujourdhui=None):
-    """Construit la fiche d'un prospect recherché par SIREN/SIRET.
+
+def analyser(prospect, resultats, aujourdhui=None):
+    """Construit la fiche d'un prospect à partir des résultats de l'API.
 
     Args:
         prospect (entrees.Prospect): la ligne d'entrée.
@@ -235,128 +226,78 @@ def analyser_par_identifiant(prospect, resultats, aujourdhui=None):
         dict: la fiche complète.
     """
     aujourdhui = aujourdhui or date.today()
-    fiche = fiche_vide(prospect)
 
     if not resultats:
-        fiche["statut_verification"] = STATUT_INTROUVABLE
-        fiche["alerte"] = ALERTE_INTROUVABLE
-        fiche["message"] = (
-            f"Aucune entreprise pour l'identifiant {prospect.identifiant} "
-            f"(non diffusible, radiée avant informatisation, ou erreur de saisie)."
+        return _fiche(
+            prospect,
+            alerte=ALERTE_INTROUVABLE,
+            message=(
+                f"Aucune entreprise pour « {prospect.libelle} » — non diffusible, "
+                f"radiée avant informatisation, ou erreur de saisie."
+            ),
         )
-        return fiche
 
-    fiche["statut_verification"] = STATUT_VERIFIE
-    # Recherche directe par identifiant : la correspondance est exacte.
-    fiche["score_correspondance"] = 100
-    _remplir(fiche, resultats[0], aujourdhui)
-
-    # Si le cabinet avait aussi noté un nom, on vérifie la cohérence : un SIREN
-    # juste avec un nom qui ne colle pas, c'est une ligne mal saisie.
-    if prospect.nom and fiche["nom_officiel"]:
-        score = score_ressemblance(prospect.nom, fiche["nom_officiel"])
-        if score < SEUIL_CORRESPONDANCE:
-            fiche["message"] = (
-                f"Attention : le nom saisi « {prospect.nom} » ne correspond pas à "
-                f"« {fiche['nom_officiel']} » pour ce SIREN. " + fiche["message"]
-            ).strip()
-            if not fiche["alerte"]:
-                fiche["alerte"] = ALERTE_CORRESPONDANCE_INCERTAINE
-
-    if not fiche["message"]:
-        fiche["message"] = "Entreprise active, informations à jour."
-
-    return fiche
-
-
-def analyser_par_nom(prospect, candidats, aujourdhui=None):
-    """Construit la fiche d'un prospect recherché par dénomination.
-
-    La recherche par nom est *approchée* : on ne peut pas se contenter du
-    premier résultat. On note la ressemblance de chaque candidat, et on dégrade
-    le statut en `INCERTAIN` plutôt que d'affirmer un faux positif.
-
-    Args:
-        prospect (entrees.Prospect): la ligne d'entrée.
-        candidats (list[dict]): les `results` renvoyés par l'API.
-        aujourdhui (datetime.date | None): date de référence (tests).
-
-    Returns:
-        dict: la fiche complète.
-    """
-    aujourdhui = aujourdhui or date.today()
-    fiche = fiche_vide(prospect)
-
-    if not candidats:
-        fiche["statut_verification"] = STATUT_INTROUVABLE
-        fiche["alerte"] = ALERTE_INTROUVABLE
-        fiche["message"] = (
-            f"Aucune entreprise trouvée pour « {prospect.nom} » — "
-            f"vérifier l'orthographe ou fournir le SIREN."
+    if prospect.siren:
+        # Recherche exacte : l'API ne peut renvoyer que cette entreprise.
+        entreprise = resultats[0]
+    else:
+        # Recherche par nom : on retient le plus ressemblant, pas le premier.
+        entreprise = max(
+            resultats,
+            key=lambda e: score_ressemblance(prospect.nom, e.get("nom_complet") or ""),
         )
-        return fiche
 
-    # On retient le candidat le plus ressemblant, pas le premier de la liste.
-    score, entreprise = max(
-        ((score_ressemblance(prospect.nom, c.get("nom_complet") or ""), c)
-         for c in candidats),
-        key=lambda couple: couple[0],
+    donnees = _donnees_officielles(entreprise)
+    alerte, message = _qualifier(
+        donnees["etat_activite"], donnees["date_cessation"], aujourdhui
     )
 
-    fiche["score_correspondance"] = score
-    _remplir(fiche, entreprise, aujourdhui)
+    # Sans nom saisi, il n'y a rien à comparer : le SIREN suffit à identifier.
+    score = (
+        score_ressemblance(prospect.nom, donnees["nom_officiel"])
+        if prospect.nom
+        else 100
+    )
 
+    # Le nom saisi ne colle pas : on ne l'affirme pas, on demande confirmation.
+    # Couvre les deux cas — recherche par nom trop vague, et SIREN saisi avec
+    # le nom d'une autre société.
     if score < SEUIL_CORRESPONDANCE:
-        fiche["statut_verification"] = STATUT_INCERTAIN
-        fiche["alerte"] = ALERTE_CORRESPONDANCE_INCERTAINE
-        fiche["message"] = (
+        alerte = alerte or ALERTE_CORRESPONDANCE_INCERTAINE
+        message = (
             f"Correspondance douteuse ({score} %) entre « {prospect.nom} » et "
-            f"« {fiche['nom_officiel']} » — à confirmer manuellement. "
-            + fiche["message"]
-        ).strip()
-        return fiche
+            f"« {donnees['nom_officiel']} » — à confirmer. " + message
+        )
 
-    fiche["statut_verification"] = STATUT_VERIFIE
-    if not fiche["message"]:
-        fiche["message"] = "Entreprise active, informations à jour."
-
-    return fiche
+    return _fiche(
+        prospect, score_correspondance=score, alerte=alerte, message=message, **donnees
+    )
 
 
 def fiche_identifiant_invalide(prospect):
     """Fiche d'une ligne rejetée avant tout appel API (identifiant incohérent)."""
-    fiche = fiche_vide(prospect)
-    fiche["statut_verification"] = STATUT_IDENTIFIANT_INVALIDE
-    fiche["alerte"] = ALERTE_IDENTIFIANT_INVALIDE
-    fiche["message"] = f"Identifiant non vérifiable : {prospect.motif_rejet}."
-    return fiche
+    return _fiche(
+        prospect,
+        alerte=ALERTE_IDENTIFIANT_INVALIDE,
+        message=f"Identifiant non vérifiable : {prospect.motif_rejet}.",
+    )
 
 
-def fiche_erreur_api(prospect, message):
+def fiche_erreur_api(prospect, erreur):
     """Fiche d'une ligne dont la vérification a échoué côté réseau.
 
-    Important pour l'honnêteté du livrable : une erreur d'API n'est **pas** une
-    entreprise active. On l'affiche comme « inconnu, à relancer ».
+    Point d'honnêteté du livrable : une API en panne n'est **pas** une
+    entreprise active. On la restitue comme « inconnu, à relancer ».
     """
-    fiche = fiche_vide(prospect)
-    fiche["statut_verification"] = STATUT_ERREUR_API
-    fiche["alerte"] = ALERTE_ERREUR_API
-    fiche["message"] = f"Vérification impossible ({message}) — à relancer."
-    return fiche
-
-
-def marquer_a_signaler(fiche):
-    """Renseigne `a_signaler` : la fiche doit-elle remonter dans les alertes ?
-
-    Tout ce qui n'est pas « entreprise active et correspondance sûre » mérite un
-    œil humain. C'est le « signalement clair » demandé par le client.
-    """
-    fiche["a_signaler"] = bool(fiche["alerte"])
-    return fiche
+    return _fiche(
+        prospect,
+        alerte=ALERTE_ERREUR_API,
+        message=f"Vérification impossible ({erreur}) — à relancer.",
+    )
 
 
 def compter(fiches):
-    """Agrège les fiches en compteurs, pour le rapport console et le JSON.
+    """Agrège les fiches en compteurs, pour la synthèse console et le rapport.
 
     Args:
         fiches (list[dict]): les fiches produites.
@@ -364,22 +305,10 @@ def compter(fiches):
     Returns:
         dict: total, répartition par état et par alerte, nombre à signaler.
     """
-    resume = {
+    alertes = [fiche["alerte"] for fiche in fiches if fiche["alerte"]]
+    return {
         "total": len(fiches),
-        "par_etat": {},
-        "par_alerte": {},
-        "a_signaler": 0,
+        "a_signaler": len(alertes),
+        "par_etat": dict(Counter(fiche["etat_activite"] for fiche in fiches)),
+        "par_alerte": dict(Counter(alertes)),
     }
-
-    for fiche in fiches:
-        etat = fiche["etat_activite"]
-        resume["par_etat"][etat] = resume["par_etat"].get(etat, 0) + 1
-
-        if fiche["alerte"]:
-            resume["par_alerte"][fiche["alerte"]] = (
-                resume["par_alerte"].get(fiche["alerte"], 0) + 1
-            )
-        if fiche["a_signaler"]:
-            resume["a_signaler"] += 1
-
-    return resume

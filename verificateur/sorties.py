@@ -2,23 +2,14 @@
 
 Une seule sortie, `resultats/rapport.json` :
 
-    {
-      "meta":      { horodatage, source, paramètres, compteurs },
-      "prospects": [ une fiche par prospect vérifié ]
-    }
+    { "meta": { horodatage, source, paramètres, compteurs },
+      "prospects": [ une fiche par prospect vérifié ] }
 
-Chaque fiche porte `a_signaler` (booléen) et `alerte`, ce qui donne le
-« signalement clair » demandé par le client : les prospects à ne pas démarcher
-s'extraient en une ligne, sans relire le rapport.
+Une fiche dont `alerte` est vide n'a rien à signaler ; toutes les autres sont
+les prospects à ne pas démarcher. C'est le « signalement clair » demandé par le
+client, et il s'extrait en une ligne :
 
-    jq '.prospects[] | select(.a_signaler)' resultats/rapport.json
-    python3 -c "import json;print([p['nom_officiel'] for p in
-                json.load(open('resultats/rapport.json'))['prospects']
-                if p['a_signaler']])"
-
-Le JSON est écrit avec `ensure_ascii=False` (accents lisibles dans le fichier)
-et `indent=2` (relisible à l'œil, et un diff reste exploitable d'une exécution
-à l'autre).
+    jq '.prospects[] | select(.alerte != "")' resultats/rapport.json
 """
 
 import json
@@ -50,13 +41,6 @@ def ecrire_rapport(fiches, resume, dossier, parametres):
     Raises:
         ErreurEcriture: si le dossier ou le fichier n'a pas pu être écrit.
     """
-    try:
-        os.makedirs(dossier, exist_ok=True)
-    except OSError as erreur:
-        raise ErreurEcriture(f"Dossier {dossier} impossible : {erreur}") from erreur
-
-    chemin = os.path.join(dossier, NOM_JSON)
-
     rapport = {
         "meta": {
             "genere_le": datetime.now().isoformat(timespec="seconds"),
@@ -67,9 +51,12 @@ def ecrire_rapport(fiches, resume, dossier, parametres):
         "prospects": fiches,
     }
 
-    # Séance 5 : json.dump.
+    chemin = os.path.join(dossier, NOM_JSON)
     try:
+        os.makedirs(dossier, exist_ok=True)
         with open(chemin, "w", encoding="utf-8") as fichier:
+            # `ensure_ascii=False` garde les accents lisibles, `indent=2` rend
+            # le fichier relisible à l'œil et diffable d'une exécution à l'autre.
             json.dump(rapport, fichier, ensure_ascii=False, indent=2)
             fichier.write("\n")
     except OSError as erreur:
@@ -81,11 +68,11 @@ def ecrire_rapport(fiches, resume, dossier, parametres):
     return chemin
 
 
-def afficher_rapport(fiches, resume, duree, chemin):
+def afficher_synthese(fiches, resume, duree, chemin):
     """Affiche la synthèse sur stdout, à destination de l'opérateur.
 
-    Les logs partent sur stderr : ce rapport est donc seul sur stdout et peut
-    être redirigé vers un fichier ou envoyé par mail.
+    Les logs partent sur stderr : cette synthèse est donc seule sur stdout et
+    peut être redirigée vers un fichier ou envoyée par mail.
     """
     largeur = 74
     print("\n" + "=" * largeur)
@@ -97,7 +84,7 @@ def afficher_rapport(fiches, resume, duree, chemin):
     for etat, nombre in sorted(resume["par_etat"].items()):
         print(f"    - {etat:<20} {nombre}")
 
-    signalements = [fiche for fiche in fiches if fiche["a_signaler"]]
+    signalements = [fiche for fiche in fiches if fiche["alerte"]]
     if signalements:
         print("\n" + "-" * largeur)
         print(f"  /!\\  {len(signalements)} PROSPECT(S) À NE PAS DÉMARCHER SANS VÉRIFIER")

@@ -3,15 +3,14 @@
 Source : https://recherche-entreprises.api.gouv.fr — base officielle des
 entreprises françaises, **accès libre, sans clé d'API**.
 
-Deux contraintes de la documentation officielle sont prises en compte ici :
+Deux contraintes de la documentation officielle sont prises en compte :
   - **7 requêtes/seconde maximum par adresse IP** : c'est ce qui plafonne le
     nombre de threads du programme, et non la machine ;
   - au-delà, le serveur répond **HTTP 429** — un code passager, donc on
     réessaie, contrairement à un 400 ou un 404 qui sont définitifs.
 
 Ce module ne fait *que* parler à l'API : il renvoie du JSON déjà décodé, ou
-lève `ErreurAPI`. Il ne sait rien du métier « prospect » et n'écrit aucun
-fichier.
+lève `ErreurAPI`. Il ne sait rien du métier « prospect ».
 """
 
 import logging
@@ -34,7 +33,7 @@ class ErreurAPI(Exception):
     """Échec d'un appel API, avec un message destiné au rapport final."""
 
 
-def rechercher(parametres):
+def _appeler(parametres):
     """Appelle `/search` et renvoie la réponse JSON décodée.
 
     Args:
@@ -69,8 +68,8 @@ def rechercher(parametres):
                 try:
                     return reponse.json()
                 except ValueError:
-                    # 200 mais corps non-JSON : page d'erreur d'un proxy, portail
-                    # captif d'un wifi public… Inutile de réessayer.
+                    # 200 mais corps non-JSON : page d'erreur d'un proxy,
+                    # portail captif d'un wifi public… Inutile de réessayer.
                     raise ErreurAPI(
                         "réponse illisible : le serveur n'a pas renvoyé du JSON"
                     ) from None
@@ -88,42 +87,27 @@ def rechercher(parametres):
     raise ErreurAPI(f"{erreur} après {TENTATIVES_MAX} tentatives")
 
 
-def chercher_par_identifiant(identifiant):
-    """Recherche exacte par SIREN (9 chiffres) ou SIRET (14 chiffres).
+def chercher(requete, nombre_candidats=5):
+    """Cherche une entreprise par SIREN ou par dénomination.
 
-    L'API bascule d'elle-même en « recherche directe » quand `q` ne contient
-    que 9 ou 14 chiffres : le résultat est alors exact, pas approché.
+    Un seul point d'entrée pour les deux cas : l'API bascule d'elle-même en
+    recherche **exacte** quand `q` ne contient que les 9 chiffres d'un SIREN,
+    et fait sinon une recherche **textuelle** dont on rapatrie plusieurs
+    candidats pour pouvoir choisir le bon.
 
     Args:
-        identifiant (str): SIREN ou SIRET, chiffres uniquement.
+        requete (str): un SIREN (9 chiffres) ou une raison sociale.
+        nombre_candidats (int): nombre de résultats à rapatrier.
 
     Returns:
-        list[dict]: les entreprises trouvées (0 ou 1 élément en pratique).
+        list[dict]: les entreprises trouvées, éventuellement vide.
 
     Raises:
         ErreurAPI: en cas d'échec de l'appel.
     """
-    donnees = rechercher({"q": identifiant, "minimal": "true", "include": "siege"})
-    return donnees.get("results") or []
-
-
-def chercher_par_nom(nom, nombre_candidats=5):
-    """Recherche textuelle par dénomination.
-
-    Args:
-        nom (str): raison sociale ou nom commercial.
-        nombre_candidats (int): nombre de candidats à rapatrier, pour pouvoir
-            choisir le meilleur au lieu de croire le premier.
-
-    Returns:
-        list[dict]: les candidats renvoyés par l'API.
-
-    Raises:
-        ErreurAPI: en cas d'échec de l'appel.
-    """
-    donnees = rechercher(
+    donnees = _appeler(
         {
-            "q": nom,
+            "q": requete,
             "per_page": nombre_candidats,
             "minimal": "true",
             "include": "siege",

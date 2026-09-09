@@ -1,9 +1,7 @@
 # Package `verificateur` — cœur métier du vérificateur de prospects B2B.
 #
-# Découpage volontaire en modules (un rôle = un fichier) :
-#   entrees.py   lecture + validation du JSON de prospects (Séances 5-6)
-#   api.py       client de l'API Recherche d'entreprises (Séance 4)
-#   analyse.py   état d'activité, cessations récentes, correspondance de nom
-#   sorties.py   écriture du rapport JSON (Séance 6)
-
-__version__ = "2.0.0"
+# Un rôle par fichier, une porte d'entrée par fichier :
+#   entrees.py   charger_prospects()  le JSON du cabinet → objets Prospect
+#   api.py       chercher()           un appel à l'API, tentatives comprises
+#   analyse.py   analyser()           réponse de l'API → verdict
+#   sorties.py   ecrire_rapport()     verdicts → resultats/rapport.json

@@ -1,24 +1,15 @@
 """Lecture et validation du fichier JSON de prospects (Séances 5 et 6).
 
-Le cabinet nous fournit sa liste en JSON : un tableau d'objets, un objet par
-prospect. Ce module absorbe les saisies approximatives et ne laisse remonter
-que des objets `Prospect` exploitables — ou un motif de rejet explicite.
-
-Format attendu :
+Format attendu — un tableau, un objet par prospect :
 
     [
       {"nom": "ORANGE", "siren": "380129866", "contact": "marie@cabinet.fr"},
       {"nom": "Société Générale"}
     ]
 
-Règles retenues :
-  - le fichier peut être le tableau directement, ou un objet
-    ``{"prospects": [...]}`` — les deux formes se rencontrent ;
-  - la clé de l'identifiant peut être ``siren`` ou ``siret`` ;
-  - un identifiant est un SIREN (9 chiffres) ou un SIRET (14 chiffres), dont on
-    vérifie la **clé de Luhn** : ça rejette les fautes de frappe sans dépenser
-    un appel API ;
-  - un prospect sans nom **et** sans identifiant est ignoré (avec un warning).
+Clés reconnues : `nom`, `siren` **ou** `siret`, `contact`. Le module valide les
+identifiants (regex + clé de Luhn) pour rejeter les fautes de frappe **sans
+dépenser un appel API**, et ignore les entrées sans nom ni identifiant.
 """
 
 import json
@@ -30,7 +21,7 @@ MOTIF_SIREN = re.compile(r"^\d{9}$")
 MOTIF_SIRET = re.compile(r"^\d{14}$")
 MOTIF_NON_CHIFFRE = re.compile(r"\D+")
 
-# Clés acceptées pour l'identifiant. La première présente gagne.
+# Clés acceptées pour l'identifiant. La première renseignée gagne.
 CLES_IDENTIFIANT = ("siren", "siret")
 
 
@@ -69,15 +60,43 @@ def cle_luhn_valide(numero):
     return total % 10 == 0
 
 
+def _motif_rejet(chiffres, saisi):
+    """Dit pourquoi un identifiant est inexploitable, ou ``None`` s'il est bon.
+
+    Args:
+        chiffres (str): l'identifiant réduit à ses chiffres.
+        saisi (str): l'identifiant tel que saisi, pour le message.
+
+    Returns:
+        str | None: le motif de rejet, ou ``None``.
+    """
+    if not chiffres:
+        # Pas d'identifiant : on cherchera par nom, ce n'est pas une erreur.
+        return None
+
+    if not (MOTIF_SIREN.match(chiffres) or MOTIF_SIRET.match(chiffres)):
+        return (
+            f"« {saisi} » n'est ni un SIREN (9 chiffres) "
+            f"ni un SIRET (14 chiffres)"
+        )
+
+    if not cle_luhn_valide(chiffres[:9]):
+        return (
+            f"clé de contrôle invalide pour « {saisi} » (probable faute de frappe)"
+        )
+
+    return None
+
+
 class Prospect:
     """Un prospect du fichier d'entrée, nettoyé et validé.
 
     Attributes:
-        rang (int): position dans le tableau JSON (pour retrouver la ligne).
+        rang (int): position dans le tableau JSON, pour retrouver l'entrée.
         nom (str): nom de l'entreprise tel que saisi.
-        contact (str): champ libre, repris à l'identique dans la sortie.
+        contact (str): champ libre, repris à l'identique dans le rapport.
         identifiant_saisi (str): identifiant tel que saisi (peut être vide).
-        identifiant (str): identifiant réduit aux chiffres, ``""`` si absent.
+        siren (str): les 9 chiffres à envoyer à l'API, ``""`` si absent ou rejeté.
         motif_rejet (str | None): renseigné si l'identifiant est inexploitable.
     """
 
@@ -86,62 +105,30 @@ class Prospect:
         self.nom = str(nom or "").strip()
         self.contact = str(contact or "").strip()
         self.identifiant_saisi = str(identifiant_saisi or "").strip()
+
         # « 380 129 866 » ou « 380.129.866 » : on ne garde que les chiffres.
-        self.identifiant = MOTIF_NON_CHIFFRE.sub("", self.identifiant_saisi)
-        self.motif_rejet = self._verifier_identifiant()
+        chiffres = MOTIF_NON_CHIFFRE.sub("", self.identifiant_saisi)
+        self.motif_rejet = _motif_rejet(chiffres, self.identifiant_saisi)
 
-    def _verifier_identifiant(self):
-        """Renvoie le motif de rejet de l'identifiant, ou ``None`` s'il est bon."""
-        if not self.identifiant:
-            # Pas d'identifiant : on cherchera par nom, ce n'est pas une erreur.
-            return None
-
-        if not (MOTIF_SIREN.match(self.identifiant)
-                or MOTIF_SIRET.match(self.identifiant)):
-            return (
-                f"« {self.identifiant_saisi} » n'est ni un SIREN (9 chiffres) "
-                f"ni un SIRET (14 chiffres)"
-            )
-
-        # La forme est bonne : on contrôle la clé. Les 9 premiers chiffres d'un
-        # SIRET forment le SIREN, qui porte la clé de Luhn.
-        if not cle_luhn_valide(self.identifiant[:9]):
-            return (
-                f"clé de contrôle invalide pour « {self.identifiant_saisi} » "
-                f"(probable faute de frappe)"
-            )
-
-        return None
-
-    @property
-    def identifiant_exploitable(self):
-        """``True`` si on peut interroger l'API directement par identifiant."""
-        return bool(self.identifiant) and self.motif_rejet is None
+        # Les 9 premiers chiffres d'un SIRET sont son SIREN — et le SIREN est
+        # le seul identifiant que l'API sait rechercher à l'identique.
+        self.siren = "" if self.motif_rejet else chiffres[:9]
 
     @property
     def libelle(self):
-        """Libellé court pour les logs et les messages d'erreur."""
+        """Libellé court pour les logs et les messages."""
         return self.nom or self.identifiant_saisi or f"prospect n°{self.rang}"
-
-    def __repr__(self):
-        return f"Prospect(rang={self.rang!r}, nom={self.nom!r})"
 
 
 def _lire_json(chemin):
     """Lit le fichier et renvoie la liste brute des prospects.
-
-    Args:
-        chemin (str): chemin du fichier JSON.
-
-    Returns:
-        list: les entrées, telles qu'écrites dans le fichier.
 
     Raises:
         FichierProspectsInvalide: fichier absent, illisible, ou JSON mal formé.
     """
     try:
         with open(chemin, "r", encoding="utf-8") as fichier:
-            donnees = json.load(fichier)
+            entrees = json.load(fichier)
     except FileNotFoundError:
         raise FichierProspectsInvalide(f"Fichier introuvable : {chemin}") from None
     except PermissionError:
@@ -158,21 +145,16 @@ def _lire_json(chemin):
             f"(ligne {erreur.lineno}, colonne {erreur.colno})."
         ) from None
 
-    # Tolérance : le tableau nu, ou emballé dans {"prospects": [...]}.
-    if isinstance(donnees, dict):
-        donnees = donnees.get("prospects")
-
-    if not isinstance(donnees, list):
+    if not isinstance(entrees, list):
         raise FichierProspectsInvalide(
-            f"{chemin} doit contenir un tableau de prospects "
-            f"(ou un objet avec une clé « prospects »)."
+            f"{chemin} doit contenir un tableau de prospects."
         )
 
-    return donnees
+    return entrees
 
 
 def charger_prospects(chemin):
-    """Charge le fichier JSON de prospects et renvoie la liste des `Prospect`.
+    """Charge le fichier JSON et renvoie la liste des `Prospect`.
 
     Args:
         chemin (str): chemin du fichier JSON.
@@ -184,26 +166,21 @@ def charger_prospects(chemin):
         FichierProspectsInvalide: fichier absent, mal formé, ou sans aucun
             prospect exploitable.
     """
-    entrees = _lire_json(chemin)
-
     prospects = []
     ignores = 0
 
-    for rang, entree in enumerate(entrees, start=1):
+    for rang, entree in enumerate(_lire_json(chemin), start=1):
         if not isinstance(entree, dict):
             logging.warning(f"Prospect n°{rang} ignoré : ce n'est pas un objet JSON")
             ignores += 1
             continue
 
-        # Première clé d'identifiant renseignée : « siren », sinon « siret ».
-        identifiant = next(
-            (entree[cle] for cle in CLES_IDENTIFIANT if entree.get(cle)), ""
-        )
-
         prospect = Prospect(
             rang=rang,
             nom=entree.get("nom"),
-            identifiant_saisi=identifiant,
+            identifiant_saisi=next(
+                (entree[cle] for cle in CLES_IDENTIFIANT if entree.get(cle)), ""
+            ),
             contact=entree.get("contact"),
         )
 
